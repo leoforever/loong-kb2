@@ -140,7 +140,7 @@ def ask():
         try:
             logger.info(f"[QA] ask | retrieving from KB={kb['kb_name']} (id={kb['kb_id']})")
             dify = build_dify_service(kb)
-            result = dify.retrieve(query, top_k=5)
+            result = dify.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
             if 'error' not in result:
                 for chunk in result.get('results', []):
                     chunk['kb_name'] = kb['kb_name'] if hasattr(kb, '__getitem__') else kb.get('kb_name')

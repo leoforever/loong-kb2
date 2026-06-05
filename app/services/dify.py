@@ -45,10 +45,11 @@ class DifyKBService:
             logger.error(f"[Dify] Request failed for {url}: {e}")
             raise
 
-    def retrieve(self, query, top_k=5, search_method='semantic_search'):
+    def retrieve(self, query, top_k=5, search_method='semantic_search', reranking_enable=False):
         """
         Retrieve relevant chunks from Dify knowledge base.
-        search_method: 'semantic_search' or 'keyword_search'
+        search_method: 'semantic_search', 'keyword_search', or 'hybrid_search'
+        reranking_enable: whether to enable Dify reranking (only for semantic/hybrid)
         Returns list of {'content': str, 'score': float}
         """
         payload = {
@@ -56,7 +57,7 @@ class DifyKBService:
             'retrieval_model': {
                 'search_method': search_method,
                 'top_k': top_k,
-                'reranking_enable': False,
+                'reranking_enable': reranking_enable,
                 'score_threshold_enabled': False,
                 'score_threshold': 0.0,
             }
