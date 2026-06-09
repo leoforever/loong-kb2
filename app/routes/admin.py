@@ -294,20 +294,7 @@ def create_kb_from_template():
             'score_threshold': 0.5,
             'summary_enable': False,
         },
-        'text_summary': {
-            'doc_form': 'text_model',
-            'indexing_technique': 'high_quality',
-            'process_rule': {'mode': 'automatic'},
-            'embedding': ('BAAI/bge-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking': ('BAAI/bge-reranker-v2-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking_enable': True,
-            'weights': (0.7, 0.3),
-            'top_k': 10,
-            'score_threshold': 0.5,
-            'summary_enable': True,
-            'summary_model': ('minimax-m2.7', 'langgenius/minimax/minimax'),
-        },
-        'hierarchical_plain': {
+        'hierarchical_full': {
             'doc_form': 'hierarchical_model',
             'indexing_technique': 'high_quality',
             'process_rule': {
@@ -327,28 +314,7 @@ def create_kb_from_template():
             'score_threshold': 0.5,
             'summary_enable': False,
         },
-        'hierarchical_summary': {
-            'doc_form': 'hierarchical_model',
-            'indexing_technique': 'high_quality',
-            'process_rule': {
-                'mode': 'hierarchical',
-                'rules': {
-                    'pre_processing_rules': [{'id': 'remove_extra_spaces', 'enabled': True}],
-                    'segmentation': {'separator': '\n\n', 'max_tokens': 1024, 'chunk_overlap': 0},
-                    'parent_mode': 'full-doc',
-                    'subchunk_segmentation': {'separator': '\n\n', 'max_tokens': 512, 'chunk_overlap': 0},
-                },
-            },
-            'embedding': ('BAAI/bge-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking': ('BAAI/bge-reranker-v2-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking_enable': True,
-            'weights': (0.7, 0.3),
-            'top_k': 10,
-            'score_threshold': 0.5,
-            'summary_enable': True,
-            'summary_model': ('minimax-m2.7', 'langgenius/minimax/minimax'),
-        },
-        'parent_child': {
+        'hierarchical_paragraph': {
             'doc_form': 'hierarchical_model',
             'indexing_technique': 'high_quality',
             'process_rule': {

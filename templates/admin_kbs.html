@@ -124,40 +124,24 @@
                     <input type="radio" name="template_id" value="text_plain" checked style="display:none;">
                     <div class="tmpl-inner">
                         <strong>通用分段</strong>
-                        <span>text_model · 自动分句 · 高质量索引</span>
-                        <small>嵌入 BAAI/bge-m3 · 重排开启 · 混合检索</small>
+                        <span>text_model · 自动分句</span>
+                        <small>适用于非结构化文档、FAQ、通用文本。简单分句，检索粒度均匀。</small>
                     </div>
                 </label>
-                <label class="tmpl-card" onclick="selectTmpl('text_summary')">
-                    <input type="radio" name="template_id" value="text_summary" style="display:none;">
+                <label class="tmpl-card" onclick="selectTmpl('hierarchical_full')">
+                    <input type="radio" name="template_id" value="hierarchical_full" style="display:none;">
                     <div class="tmpl-inner">
-                        <strong>通用+摘要</strong>
-                        <span>text_model · 自动分句 · 开启摘要</span>
-                        <small>嵌入 BAAI/bge-m3 · 重排开启 · MiniMax摘要</small>
+                        <strong>父子分段-全文</strong>
+                        <span>hierarchical · parent_mode=full-doc</span>
+                        <small>适用于结构化文档（PDF/手册）。整篇文档为父chunk，子块512字，保留完整上下文。</small>
                     </div>
                 </label>
-                <label class="tmpl-card" onclick="selectTmpl('hierarchical_plain')">
-                    <input type="radio" name="template_id" value="hierarchical_plain" style="display:none;">
+                <label class="tmpl-card" onclick="selectTmpl('hierarchical_paragraph')" style="grid-column:1/-1;">
+                    <input type="radio" name="template_id" value="hierarchical_paragraph" style="display:none;">
                     <div class="tmpl-inner">
-                        <strong>父子分段</strong>
-                        <span>hierarchical · 全文为父 · 子块512字</span>
-                        <small>嵌入 BAAI/bge-m3 · 重排开启 · 混合检索</small>
-                    </div>
-                </label>
-                <label class="tmpl-card" onclick="selectTmpl('hierarchical_summary')">
-                    <input type="radio" name="template_id" value="hierarchical_summary" style="display:none;">
-                    <div class="tmpl-inner">
-                        <strong>父子+摘要</strong>
-                        <span>hierarchical · 全文为父 · 开启摘要</span>
-                        <small>嵌入 BAAI/bge-m3 · 重排开启 · MiniMax摘要</small>
-                    </div>
-                </label>
-                <label class="tmpl-card" onclick="selectTmpl('parent_child')" style="grid-column:1/-1;">
-                    <input type="radio" name="template_id" value="parent_child" style="display:none;">
-                    <div class="tmpl-inner">
-                        <strong>父子链（Parent-Chain）</strong>
-                        <span>hierarchical · 父子链模式 · 128字子块 · 最大检索粒度</span>
-                        <small>嵌入 BAAI/bge-m3 · 重排开启 · 适合结构化文档</small>
+                        <strong>父子分段-段落</strong>
+                        <span>hierarchical · parent_mode=paragraph · 子块128字</span>
+                        <small>适用于高度结构化文档（表格、多级标题）。每个段落为父chunk，最细粒度子块，适合精确匹配场景。</small>
                     </div>
                 </label>
             </div>
