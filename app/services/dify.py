@@ -114,32 +114,17 @@ class DifyKBService:
                     payload = {
                         "doc_form": "hierarchical_model",
                         "indexing_technique": "high_quality",
-                        "process_rule": process_rule or {
-                            "mode": "hierarchical",
-                            "rules": {
-                                "pre_processing_rules": [{"id": "remove_extra_spaces", "enabled": True}],
-                                "segmentation": {
-                                    "separator": "\n\n",
-                                    "max_tokens": 1024,
-                                    "chunk_overlap": 0
-                                },
-                                "parent_mode": "full-doc",
-                                "subchunk_segmentation": {
-                                    "separator": "\n\n",
-                                    "max_tokens": 512,
-                                    "chunk_overlap": 0
-                                }
-                            }
-                        }
                     }
+                    # process_rule 由调用方显式传入；不传则 Dify 使用知识库的默认配置
+                    if process_rule:
+                        payload["process_rule"] = process_rule
                 else:
                     payload = {
                         "doc_form": "text_model",
                         "indexing_technique": "high_quality",
-                        "process_rule": process_rule or {
-                            "mode": "automatic",
-                        }
                     }
+                    if process_rule:
+                        payload["process_rule"] = process_rule
                 data = {
                     'data': json.dumps(payload),
                 }

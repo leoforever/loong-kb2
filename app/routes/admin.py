@@ -356,7 +356,7 @@ def create_kb_from_template():
                 'rules': {
                     'pre_processing_rules': [{'id': 'remove_extra_spaces', 'enabled': True}],
                     'segmentation': {'separator': '\n\n', 'max_tokens': 512, 'chunk_overlap': 0},
-                    'parent_mode': 'full-doc',
+                    'parent_mode': 'paragraph',
                     'subchunk_segmentation': {'separator': '\n', 'max_tokens': 128, 'chunk_overlap': 0},
                 },
             },
