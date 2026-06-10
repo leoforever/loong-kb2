@@ -42,6 +42,26 @@ def get_minimax_config():
         'model': mm.get('model', 'MiniMax-M2.7'),
     }
 
+def get_llm_config():
+    """返回当前选定的 LLM 提供者配置（minimax 或 qwen）"""
+    cfg = load_config()
+    llm = cfg.get('llm', {})
+    provider = llm.get('provider', 'minimax')
+    if provider == 'qwen':
+        return {**get_qwen_config(), 'provider': 'qwen'}
+    else:
+        return {**get_minimax_config(), 'provider': 'minimax'}
+
+
+def get_qwen_config():
+    cfg = load_config()
+    qw = cfg.get('qwen', {})
+    return {
+        'base_url': qw.get('base_url', 'http://10.40.65.220:8080/qwen3_5'),
+        'model': qw.get('model', 'Qwen3.5-27B-W8A8'),
+    }
+
+
 def get_dify_defaults():
     cfg = load_config()
     dify = cfg.get('dify', {})

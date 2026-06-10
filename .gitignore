@@ -1,3 +1,4 @@
+*.backup
 config.yaml
 config.yaml.example
 *.pyc
