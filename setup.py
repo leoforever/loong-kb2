@@ -47,6 +47,27 @@ def setup():
     init_db()
     print("✓ 数据库初始化完成")
 
+    # 兼容旧数据库：若 kb_configs 缺少 template_type 列则添加
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(kb_configs)")
+        cols = [r['name'] for r in c.fetchall()]
+        if 'template_type' not in cols:
+            c.execute("ALTER TABLE kb_configs ADD COLUMN template_type TEXT")
+            print("✓ 添加 template_type 列到 kb_configs")
+        c.execute("PRAGMA table_info(role_kb_permissions)")
+        perm_cols = [r['name'] for r in c.fetchall()]
+        if 'can_access' not in perm_cols:
+            # 旧数据库：can_read → can_access, can_query → can_edit/can_manage
+            c.execute("ALTER TABLE role_kb_permissions ADD COLUMN can_access INTEGER DEFAULT 0")
+            c.execute("ALTER TABLE role_kb_permissions ADD COLUMN can_edit INTEGER DEFAULT 0")
+            c.execute("ALTER TABLE role_kb_permissions ADD COLUMN can_manage INTEGER DEFAULT 0")
+            print("✓ 添加 can_access/can_edit/can_manage 列到 role_kb_permissions")
+            # 迁移旧数据
+            if 'can_read' in perm_cols and 'can_query' in perm_cols:
+                c.execute("UPDATE role_kb_permissions SET can_access = COALESCE(can_read, 0), can_edit = COALESCE(can_query, 0), can_manage = COALESCE(can_query, 0) WHERE can_read = 1 OR can_query = 1")
+                print("✓ 迁移旧权限数据（can_read→can_access, can_query→can_edit/can_manage）")
+
     # Create admin user
     pwd_hash = bcrypt.hashpw('admin123'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     try:
