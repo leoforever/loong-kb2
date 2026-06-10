@@ -6,11 +6,21 @@ server:
   host: "0.0.0.0"
   port: 5001
 
-# MiniMax LLM 配置
+# LLM 配置
+# provider: 当前支持 minimax / qwen，切换只需改这一行
+llm:
+  provider: "minimax"
+
+# MiniMax LLM 配置（provider=minimax 时生效）
 minimax:
   api_key: "YOUR_MINIMAX_API_KEY"
   base_url: "https://api.minimaxi.com/anthropic"
   model: "MiniMax-M2.7"
+
+# Qwen LLM 配置（provider=qwen 时生效）
+qwen:
+  base_url: "http://YOUR_QWEN_SERVER:PORT"
+  model: "Qwen3.5-27B-W8A8"
 
 # Dify 全局默认 API 配置（新建知识库时的默认值）
 dify:
