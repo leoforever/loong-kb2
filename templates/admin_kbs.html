@@ -198,15 +198,35 @@ function validateCreateKB() {
     var selected = document.querySelector('input[name="template_id"]:checked');
     if (!selected) {
         var err = document.getElementById('tmpl-error');
-        if (err) {
-            err.style.display = 'block';
-        }
+        if (err) { err.style.display = 'block'; }
         return false;
     }
+    // 新建知识库操作较慢，显示 loading
+    showLoading('正在创建知识库（约需 10-30 秒）...');
     return true;
+}
+// 页面加载后：若弹窗可见但有错误提示，说明上次提交失败，隐藏 loading
+window.addEventListener('DOMContentLoaded', function() {
+    var modal = document.getElementById('createKBModal');
+    var errEl = document.getElementById('tmpl-error');
+    if (modal && modal.style.display !== 'none' && errEl && errEl.style.display === 'block') {
+        hideLoading();
+    }
+});
+function showLoading(msg) {
+    const overlay = document.createElement('div');
+    overlay.id = 'loading-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px;';
+    overlay.innerHTML = '<div style="background:white;border-radius:12px;padding:32px 48px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.15);"><div style="font-size:16px;font-weight:500;color:#333;">' + msg + '</div><div style="margin-top:12px;color:#888;font-size:14px;">请稍候，勿关闭页面</div></div>';
+    document.body.appendChild(overlay);
+}
+function hideLoading() {
+    const el = document.getElementById('loading-overlay');
+    if (el) el.remove();
 }
 function syncKBs() {
     if (!confirm('将从 Dify API 同步知识库列表，是否继续？')) return;
+    showLoading('正在同步知识库...');
     fetch('/admin/kbs/sync', {method:'POST'}).then(r => location.reload());
 }
 function selectTmpl(id) {
@@ -216,6 +236,7 @@ function selectTmpl(id) {
 }
 function deleteKB(kbId, kbName) {
     if (!confirm(`确认删除知识库「${kbName}」？\n\n删除后，Dify 上的知识库和所有文档也将同步删除。`)) return;
+    showLoading('正在删除知识库...');
     fetch(`/admin/kbs/${kbId}/delete`, {method:'POST'}).then(r => location.reload());
 }
 function hideModal(id) { document.getElementById(id).style.display = 'none'; }
