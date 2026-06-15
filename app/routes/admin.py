@@ -154,18 +154,23 @@ def create_user():
 @admin_required
 def update_user_roles(username):
     role_names = request.form.getlist('role_ids')
-    from app.models import get_db_conn, get_user_by_name
+    from app.models import get_db_conn, get_user_by_username
 
-    user = get_user_by_name(username)
+    user = get_user_by_username(username)
     if not user:
         flash('用户不存在', 'error')
         return redirect(url_for('admin.users'))
 
-    # Update users.roles column directly (stores comma-separated role names)
+    # Update via user_roles mapping table
     with get_db_conn() as conn:
         c = conn.cursor()
-        c.execute('UPDATE users SET roles = ? WHERE user_id = ?',
-                  (','.join(role_names), user['user_id']))
+        c.execute('DELETE FROM user_roles WHERE user_id = ?', (user['user_id'],))
+        for rname in role_names:
+            c.execute('SELECT role_id FROM roles WHERE role_name = ?', (rname,))
+            row = c.fetchone()
+            if row:
+                c.execute('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)',
+                          (user['user_id'], row['role_id']))
 
     flash('角色分配已更新', 'success')
     return redirect(url_for('admin.users'))
