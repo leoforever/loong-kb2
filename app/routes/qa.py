@@ -80,6 +80,7 @@ def ask():
     clear = data.get('clear', False)
     query = data.get('query', '').strip()
     requested_kb_ids = data.get('kb_ids')  # None means all
+    provider = data.get('provider')  # optional override
 
     user_id = session['user_id']
 
@@ -174,7 +175,7 @@ def ask():
         yield f"data: {json.dumps({'token': '正在检索知识库并生成回答...'})}\n\n"
         from app.services.llm import generate_answer_stream
         answer_text = ''
-        for event in generate_answer_stream(chunk_texts, query):
+        for event in generate_answer_stream(chunk_texts, query, provider=provider):
             if event['type'] == 'error':
                 logger.error(f"[QA] ask | LLM error: {event['content']}")
                 yield f"data: {json.dumps({'error': event['content']})}\n\n"
@@ -228,6 +229,7 @@ def chat(kb_id):
 
     if request.method == 'POST':
         query = request.json.get('query', '').strip()
+        provider = request.json.get('provider')
         if not query:
             return jsonify({'error': '问题不能为空'}), 400
 
@@ -248,7 +250,7 @@ def chat(kb_id):
             save_query_log(session['user_id'], kb_id, query, answer, 0)
             return jsonify({'answer': answer, 'chunks': []})
 
-        answer, _ = generate_answer(chunks, query)
+        answer, _ = generate_answer(chunks, query, provider=provider)
         save_query_log(session['user_id'], kb_id, query, answer, 0)
         return jsonify({'answer': answer, 'chunks': chunks})
 

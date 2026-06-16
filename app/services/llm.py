@@ -5,17 +5,25 @@ LLM 服务适配层 - 支持 MiniMax / Qwen 多种后端
 import requests
 import logging
 import json
-from app.config import get_llm_config
+from app.config import get_llm_config, get_minimax_config, get_qwen_config
 
 logger = logging.getLogger(__name__)
 
 
 # ==================== 适配层接口 ====================
 
-def get_llm_backend():
-    """Factory: 根据配置返回对应的 LLM 后端"""
-    cfg = get_llm_config()
-    provider = cfg.get('provider', 'minimax')
+def get_llm_backend(provider=None):
+    """Factory: 根据配置返回对应的 LLM 后端，provider 可覆盖配置"""
+    if provider is None:
+        cfg = get_llm_config()
+        provider = cfg.get('provider', 'minimax')
+    else:
+        # provider 指定时，构造对应后端配置
+        if provider == 'qwen':
+            cfg = {**get_llm_config(), **get_qwen_config()}
+        else:
+            cfg = {**get_llm_config(), **get_minimax_config()}
+        cfg['provider'] = provider
     if provider == 'qwen':
         return QwenBackend(cfg)
     return MiniMaxBackend(cfg)
@@ -39,20 +47,20 @@ def _build_user_message(query):
     return f"问题：{query}\n\n请根据上面的知识库内容回答问题。"
 
 
-def generate_answer(context_chunks, query, model=None):
+def generate_answer(context_chunks, query, model=None, provider=None):
     """
     使用当前配置的 LLM 生成回答（非流式）。
     Returns (answer_text, raw_response)
     """
-    backend = get_llm_backend()
+    backend = get_llm_backend(provider=provider)
     return backend.generate(context_chunks, query, model=model)
 
 
-def generate_answer_stream(context_chunks, query, model=None):
+def generate_answer_stream(context_chunks, query, model=None, provider=None):
     """
     流式生成回答，yield dicts: {'type': 'text', 'content': '...'} 或 {'type': 'error', 'content': '...'}
     """
-    backend = get_llm_backend()
+    backend = get_llm_backend(provider=provider)
     yield from backend.stream(context_chunks, query, model=model)
 
 

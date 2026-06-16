@@ -59,7 +59,12 @@
                         </span>
                     </div>
                 </div>
-                <div>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <select id="modelSelect" style="padding:6px 10px; font-size:13px; border:1px solid #ddd; border-radius:6px; color:#333; cursor:pointer;">
+                        <option value="">默认模型</option>
+                        <option value="minimax">MiniMax-M2.7</option>
+                        <option value="qwen">Qwen3.5-27B-W8A8</option>
+                    </select>
                     <button onclick="newChat()" id="newChatBtn" style="padding:8px 16px; border:1px solid #CC0000; background:white; color:#CC0000; border-radius:6px; font-size:13px; cursor:pointer;">+ 新对话</button>
                 </div>
             </div>
@@ -163,7 +168,7 @@ async function sendQuery() {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             signal: abortController.signal,
-            body: JSON.stringify({query, session_id: sessionId, kb_ids: selectedKbs})
+            body: JSON.stringify({query, session_id: sessionId, kb_ids: selectedKbs, provider: document.getElementById('modelSelect').value})
         });
 
         const reader = resp.body.getReader();

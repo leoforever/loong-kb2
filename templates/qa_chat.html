@@ -46,6 +46,11 @@
             <p style="color:#888; font-size:13px; margin-top:2px;">{{ kb.description }}</p>
             {% endif %}
             <span class="doc-toggle" onclick="toggleDocs()">📄 知识库文件 ▾</span>
+            <select id="modelSelect" style="padding:4px 8px; font-size:13px; border:1px solid #ddd; border-radius:6px; color:#333; cursor:pointer; margin-left:12px;">
+                <option value="">默认模型</option>
+                <option value="minimax">MiniMax-M2.7</option>
+                <option value="qwen">Qwen3.5-27B-W8A8</option>
+            </select>
         </div>
     </div>
 
@@ -96,7 +101,7 @@ async function sendQuery() {
         const resp = await fetch(`/qa/${kbId}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({query})
+            body: JSON.stringify({query, provider: document.getElementById('modelSelect').value})
         });
         const data = await resp.json();
         document.querySelector('.loading')?.remove();
