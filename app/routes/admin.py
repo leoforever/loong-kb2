@@ -3,6 +3,7 @@ Admin routes - manage users, roles, KB configs, permissions
 """
 from flask import Blueprint, request, render_template, redirect, url_for, jsonify, session, flash
 import bcrypt
+import requests
 import logging
 
 bp = Blueprint('admin', __name__)
@@ -257,7 +258,7 @@ def get_role_permissions(role_id):
 @bp.route('/admin/kbs')
 def kbs():
     from app.models import get_all_kbs, get_all_roles, get_all_role_kb_permissions, get_kb_permissions_for_roles, get_user_roles, get_db_conn
-    from app.config import get_dify_defaults
+    from app.config import get_dify_defaults, get_embedding_config
     # Permission check: must be admin OR have at least one KB with can_edit/can_manage
     user_id = session.get('user_id')
     if not user_id:
@@ -303,7 +304,8 @@ def kbs():
                             is_admin=is_admin,
                             editable_kb_ids=editable_kb_ids,
                             accessible_kb_ids=accessible_kb_ids,
-                            manageable_kb_ids=manageable_kb_ids)
+                            manageable_kb_ids=manageable_kb_ids,
+                            embedding_config=get_embedding_config())
 
 
 def _user_has_any_kb_manage():
@@ -813,7 +815,32 @@ def get_model_list(model_type):
     result = get_available_models(model_type)
     if 'error' in result:
         return jsonify({'error': result['error']}), 500
-    return jsonify({'models': result['models']})
+
+    # 尝试从已有知识库获取默认模型名
+    default_model = None
+    default_rerank = None
+    try:
+        datasets_resp = requests.get(
+            'http://10.40.65.209/v1/datasets?page=1&limit=3',
+            headers={'Authorization': 'Bearer dataset-BO8tHRQFbzGXoTPHwug2m8Tv'},
+            timeout=10,
+        )
+        if datasets_resp.status_code == 200:
+            for ds in datasets_resp.json().get('data', []):
+                if ds.get('embedding_model'):
+                    default_model = ds['embedding_model']
+                rm = ds.get('retrieval_model_dict', {}).get('reranking_model', {})
+                if rm.get('reranking_model_name'):
+                    default_rerank = rm['reranking_model_name']
+                break
+    except Exception:
+        pass
+
+    return jsonify({
+        'models': result['models'],
+        'default_model': default_model,
+        'default_rerank': default_rerank,
+    })
 
 
 # ==================== Local QA KB Management ====================

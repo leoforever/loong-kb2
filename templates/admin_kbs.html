@@ -171,7 +171,7 @@
                     <input type="radio" name="template_id" value="qa" style="display:none;">
                     <div class="tmpl-inner">
                         <strong>问答知识库</strong>
-                        <span>local · 无需 Dify · CSV 导入</span>
+                        <span>local · 无需 Dify · CSV 导入 · {{ embedding_config.siliconflow.model if embedding_config.provider == 'siliconflow' else embedding_config.ollama.model if embedding_config.provider == 'ollama' else '默认嵌入模型' }}</span>
                         <small>适合 FAQ、产品手册等固定问答场景。导入格式：CSV 两列（问题,答案），首行可为表头，UTF-8 编码。</small>
                     </div>
                 </label>
@@ -515,7 +515,8 @@ function loadModelLists() {
                 sel.innerHTML = '<option value="">加载失败</option>';
                 loading.textContent = data.error;
             } else {
-                sel.innerHTML = '<option value="">使用默认值</option>';
+                const label = data.default_model ? '使用默认值（' + data.default_model + '）' : '使用默认值';
+                sel.innerHTML = '<option value="">' + label + '</option>';
                 data.models.forEach(m => {
                     const opt = document.createElement('option');
                     opt.value = m.provider + '/' + m.model;
@@ -540,7 +541,8 @@ function loadModelLists() {
                 sel.innerHTML = '<option value="">加载失败</option>';
                 loading.textContent = data.error;
             } else {
-                sel.innerHTML = '<option value="">不使用 Rerank</option>';
+                const label = data.default_rerank ? '使用默认值（' + data.default_rerank + '）' : '使用默认值';
+                sel.innerHTML = '<option value="">' + label + '</option>';
                 data.models.forEach(m => {
                     const opt = document.createElement('option');
                     opt.value = m.provider + '/' + m.model;

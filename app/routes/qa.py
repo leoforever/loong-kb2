@@ -62,10 +62,12 @@ def index():
     _load_history(user_id)
     accessible_kbs = get_user_accessible_kbs(user_id)
     messages = _conversation_cache.get(user_id, [])
+    from app.config import get_llm_config
     return render_template('qa_index.html',
                            accessible_kbs=accessible_kbs,
                            username=session.get('username', ''),
-                           chat_history=messages)
+                           chat_history=messages,
+                           llm_config=get_llm_config())
 
 
 @bp.route('/qa/ask', methods=['POST'])
