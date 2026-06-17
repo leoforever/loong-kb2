@@ -7,6 +7,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _doc_form_to_template(doc_form):
+    """将 Dify doc_form 转换为本地 template_type"""
+    if doc_form == 'hierarchical_model':
+        return 'hierarchical_full'
+    # text_model, paragraph, page, or None → default to text_plain
+    return 'text_plain'
+
+
 def sync_kbs_from_dify():
     """
     Fetch all datasets from Dify API and sync to local kb_configs table.
@@ -52,11 +60,17 @@ def sync_kbs_from_dify():
         c = conn.cursor()
 
         # 1. Clean up local KBs that no longer exist in Dify
-        c.execute('SELECT kb_id, dify_dataset_id, kb_name FROM kb_configs')
+        # Skip local QA KBs (template_type='qa' or dify_dataset_id IS NULL)
+        c.execute('SELECT kb_id, dify_dataset_id, kb_name, template_type FROM kb_configs')
         local_kbs = list(c.fetchall())
         deleted_local = 0
         for row in local_kbs:
             local_id = row['dify_dataset_id']
+            # Skip local QA KBs: no dify_dataset_id or explicit qa type
+            template = row['template_type'] if 'template_type' in row.keys() else None
+            if template == 'qa' or (local_id is None and template == 'qa'):
+                logger.info(f"[Sync] Skipping local QA KB: {row['kb_name']} (id={row['kb_id']})")
+                continue
             if local_id not in remote_ids:
                 # Delete role permissions first, then the KB
                 c.execute('DELETE FROM role_kb_permissions WHERE kb_id = ?', (row['kb_id'],))
@@ -81,9 +95,9 @@ def sync_kbs_from_dify():
                 if row:
                     c.execute('''
                         UPDATE kb_configs
-                        SET kb_name = ?, description = ?, dify_api_url = ?, dify_api_key = ?
+                        SET kb_name = ?, description = ?, dify_api_url = ?, dify_api_key = ?, template_type = ?
                         WHERE dify_dataset_id = ?
-                    ''', (kb_name, description, api_url, api_key, dataset_id))
+                    ''', (kb_name, description, api_url, api_key, _doc_form_to_template(ds.get('doc_form')), dataset_id))
                     kb_id = row['kb_id']
                     logger.info(f"[Sync] Updated KB: {kb_name} (kb_id={kb_id})")
 
@@ -102,9 +116,9 @@ def sync_kbs_from_dify():
                         ''', (viewer_role['role_id'], kb_id))
                 else:
                     c.execute('''
-                        INSERT INTO kb_configs (kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, is_active)
-                        VALUES (?, ?, ?, ?, ?, 1)
-                    ''', (kb_name, description, api_url, api_key, dataset_id))
+                        INSERT INTO kb_configs (kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type, is_active)
+                        VALUES (?, ?, ?, ?, ?, ?, 1)
+                    ''', (kb_name, description, api_url, api_key, dataset_id, _doc_form_to_template(ds.get('doc_form'))))
                     kb_id = c.lastrowid
 
                     # 直接用同一个连接写入权限，不开新连接（避免 SQLite 并发锁定）

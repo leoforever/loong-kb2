@@ -21,7 +21,7 @@ else
     DISPLAY_IP="$SERVER_HOST"
 fi
 
-PID=$(ps aux | grep "gunicorn.*wsgi:app" | grep -v grep | awk '{print $2}')
+PID=$(ps aux | grep "gunicorn.*wsgi:app" | grep -v grep | awk '{print $2}' | tr '\n' ' ' | sed 's/ $//')
 if [ -n "$PID" ]; then
     echo "loong-kb 已在运行 (PID: $PID)"
     exit 0

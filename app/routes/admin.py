@@ -387,8 +387,8 @@ def edit_kb(kb_id):
 @bp.route('/admin/kbs/<int:kb_id>/delete', methods=['POST'])
 @kb_manage_required
 def delete_kb(kb_id):
-    """删除知识库：先删本地记录，再删 Dify dataset"""
-    from app.models import get_kb_by_id
+    """删除知识库：先删本地记录，Dify知识库同步删除 Dify dataset"""
+    from app.models import get_kb_by_id, is_local_qa_kb
     from app.services.dify import delete_dataset
     kb = get_kb_by_id(kb_id)
     if not kb:
@@ -397,14 +397,17 @@ def delete_kb(kb_id):
 
     dataset_id = kb['dify_dataset_id']
 
-    # 删本地记录（Dify 上的 dataset 同步删除）
+    # 删本地记录
     from app.models import delete_kb as db_delete_kb
     db_delete_kb(kb_id)
 
-    # 同步删除 Dify 上的 dataset
-    result = delete_dataset(dataset_id)
-    if 'error' in result:
-        flash(f'知识库已删除，但 Dify 同步删除失败：{result["error"]}', 'error')
+    # 同步删除 Dify 上的 dataset（仅 Dify 类型知识库）
+    if dataset_id and not is_local_qa_kb(kb_id):
+        result = delete_dataset(dataset_id)
+        if 'error' in result:
+            flash(f'知识库已删除，但 Dify 同步删除失败：{result["error"]}', 'error')
+        else:
+            flash('知识库已删除', 'success')
     else:
         flash('知识库已删除', 'success')
     return redirect(url_for('admin.kbs'))
@@ -514,10 +517,33 @@ def create_kb_from_template():
             'score_threshold': 0.5,
             'summary_enable': False,
         },
+        'qa': {
+            'doc_form': 'qa',
+            'indexing_technique': 'high_quality',
+            'process_rule': None,
+            'embedding': None,
+            'reranking': None,
+            'reranking_enable': False,
+            'weights': None,
+            'top_k': 10,
+            'score_threshold': 0.0,
+            'summary_enable': False,
+        },
     }
 
     if template_id not in TEMPLATES:
         flash(f'未知模板: {template_id}', 'error')
+        return redirect(url_for('admin.kbs'))
+
+    # ===== 问答知识库（本地 FAISS，不走 Dify） =====
+    if template_id == 'qa':
+        from app.models import create_local_qa_kb, get_role_by_name, set_kb_role_permission
+        kb_id = create_local_qa_kb(kb_name, description)
+        # 给 admin 角色加权限
+        admin_role = get_role_by_name('admin')
+        if admin_role:
+            set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
+        flash(f'问答知识库「{kb_name}」创建成功', 'success')
         return redirect(url_for('admin.kbs'))
 
     tmpl = dict(TEMPLATES[template_id])  # 深拷贝，避免污染模板
@@ -788,3 +814,175 @@ def get_model_list(model_type):
     if 'error' in result:
         return jsonify({'error': result['error']}), 500
     return jsonify({'models': result['models']})
+
+
+# ==================== Local QA KB Management ====================
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/upload', methods=['POST'])
+@kb_edit_required
+def upload_qa_csv(kb_id):
+    """上传 CSV 文件导入问答对到本地问答知识库"""
+    from app.models import get_kb_by_id, is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    if 'file' not in request.files:
+        return jsonify({'error': '未找到上传文件'}), 400
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': '文件名为空'}), 400
+
+    import csv, os, uuid, tempfile
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = os.path.join(tmp_dir, f'{uuid.uuid4().hex}.csv')
+    file.save(tmp_path)
+
+    try:
+        qa_list = []
+        with open(tmp_path, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                q = (row.get('问题') or row.get('question') or row.get('Q') or '').strip()
+                a = (row.get('答案') or row.get('answer') or row.get('A') or '').strip()
+                if not q:
+                    continue
+                qa_list.append({'question': q, 'answer': a})
+    except Exception as e:
+        os.remove(tmp_path)
+        os.rmdir(tmp_dir)
+        return jsonify({'error': f'CSV 解析失败: {e}'}), 500
+    finally:
+        os.remove(tmp_path)
+        os.rmdir(tmp_dir)
+
+    if not qa_list:
+        return jsonify({'error': '未找到有效问答对（需要 question/问题 和 answer/答案 列）'}), 400
+
+    from app.services.local_qa import add_local_qa_items
+    count = add_local_qa_items(kb_id, qa_list)
+    return jsonify({'ok': True, 'added': count})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/add', methods=['POST'])
+@kb_edit_required
+def add_qa_item(kb_id):
+    """手动添加单条问答对"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    data = request.get_json() or {}
+    q = (data.get('question') or '').strip()
+    a = (data.get('answer') or '').strip()
+    if not q:
+        return jsonify({'error': '问题不能为空'}), 400
+
+    from app.services.local_qa import add_local_qa_items
+    count = add_local_qa_items(kb_id, [{'question': q, 'answer': a}])
+    return jsonify({'ok': True, 'added': count})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/items', methods=['GET'])
+def list_qa_items(kb_id):
+    """列出问答知识库所有问答对（支持分页）"""
+    from app.models import get_kb_by_id, is_local_qa_kb, get_kb_permissions_for_roles, get_user_roles, get_db_conn
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({'error': '请先登录'}), 401
+
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return jsonify({'error': '知识库不存在'}), 404
+
+    # 权限检查
+    role_names = get_user_roles(user_id)
+    is_admin = 'admin' in role_names
+    if not is_admin:
+        with get_db_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT role_id FROM roles WHERE role_name IN (%s)' %
+                      ','.join(['?'] * len(role_names)), role_names)
+            role_ids = [row['role_id'] for row in c.fetchall()]
+        if not role_ids:
+            return jsonify({'error': '无权限', 'code': 'forbidden'}), 403
+        perms = get_kb_permissions_for_roles(role_ids)
+        perm = perms.get(kb_id, {})
+        if not perm.get('can_access'):
+            return jsonify({'error': '无权限访问该知识库', 'code': 'forbidden'}), 403
+
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import list_local_qa_items
+    page = max(1, request.args.get('page', 1, type=int))
+    limit = min(200, max(10, request.args.get('limit', 50, type=int)))
+    offset = (page - 1) * limit
+    items, total = list_local_qa_items(kb_id, offset=offset, limit=limit)
+    return jsonify({'items': items, 'total': total, 'page': page, 'limit': limit})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/delete/<int:item_id>', methods=['POST'])
+@bp.route('/admin/kbs/<int:kb_id>/qa/<int:item_id>', methods=['DELETE'])
+@kb_edit_required
+def delete_qa_item(kb_id, item_id=None):
+    """删除指定问答对"""
+    # Support both /qa/delete/{id} (POST) and /qa/{id} (DELETE)
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import delete_local_qa_item
+    delete_local_qa_item(kb_id, item_id)
+    return jsonify({'ok': True})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/clear', methods=['POST'])
+@kb_edit_required
+def clear_qa_items(kb_id):
+    """清空问答知识库所有内容"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import clear_local_qa
+    clear_local_qa(kb_id)
+    return jsonify({'ok': True})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/count', methods=['GET'])
+def qa_count(kb_id):
+    """获取问答知识库的问答对数量"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import count_local_qa
+    count = count_local_qa(kb_id)
+    return jsonify({'count': count})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/index-status', methods=['GET'])
+def qa_index_status(kb_id):
+    """获取问答知识库的向量索引状态"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import is_indexed
+    indexed = is_indexed(kb_id)
+    return jsonify({'indexed': indexed})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/rebuild-index', methods=['POST'])
+@kb_edit_required
+def qa_rebuild_index(kb_id):
+    """重建问答知识库的向量索引"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.services.local_qa import rebuild_local_qa_index
+    result = rebuild_local_qa_index(kb_id)
+    if result.get('error'):
+        return jsonify({'error': result['error']}), 500
+    return jsonify({'ok': True, 'indexed_count': result.get('indexed_count', 0)})

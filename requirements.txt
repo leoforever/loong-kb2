@@ -2,3 +2,5 @@ bcrypt
 pyyaml
 gunicorn
 requests
+numpy
+faiss-cpu

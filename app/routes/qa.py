@@ -137,23 +137,46 @@ def ask():
     all_chunks = []
     all_sources = []
 
+    # 1. 先检索本地问答知识库（返回 "问题→答案" 作为 chunk）
     for kb in accessible_kbs:
-        try:
-            logger.info(f"[QA] ask | retrieving from KB={kb['kb_name']} (id={kb['kb_id']})")
-            dify = build_dify_service(kb)
-            result = dify.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
-            if 'error' not in result:
-                for chunk in result.get('results', []):
-                    chunk['kb_name'] = kb['kb_name'] if hasattr(kb, '__getitem__') else kb.get('kb_name')
-                    chunk['kb_id'] = kb['kb_id'] if hasattr(kb, '__getitem__') else kb.get('kb_id')
-                all_chunks.extend(result.get('results', []))
-                if result.get('results'):
-                    all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name']})
-                logger.info(f"[QA] ask | KB={kb['kb_name']} got {len(result.get('results',[]))} chunks")
-            else:
-                logger.error(f"[QA] ask | KB={kb['kb_name']} retrieve error: {result['error']}")
-        except Exception as e:
-            logger.error(f"[QA] ask | KB={kb['kb_name']} exception: {e}")
+        if kb.get('template_type') == 'qa':
+            try:
+                from app.services.local_qa import search_local_qa
+                results = search_local_qa(kb['kb_id'], query, top_k=20)
+                for r in results:
+                    all_chunks.append({
+                        'content': f"问题：{r['question']}\n答案：{r['answer']}",
+                        'score': r['score'],
+                        'kb_name': kb['kb_name'],
+                        'kb_id': kb['kb_id'],
+                        'is_qa': True,
+                    })
+                if results:
+                    all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'qa'})
+                logger.info(f"[QA] ask | KB={kb['kb_name']} (QA) got {len(results)} chunks")
+            except Exception as e:
+                logger.error(f"[QA] ask | KB={kb['kb_name']} (QA) exception: {e}")
+
+    # 2. 再检索 Dify 知识库
+    for kb in accessible_kbs:
+        if kb.get('template_type') != 'qa':
+            try:
+                logger.info(f"[QA] ask | retrieving from KB={kb['kb_name']} (id={kb['kb_id']})")
+                dify = build_dify_service(kb)
+                result = dify.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+                if 'error' not in result:
+                    for chunk in result.get('results', []):
+                        chunk['kb_name'] = kb['kb_name'] if hasattr(kb, '__getitem__') else kb.get('kb_name')
+                        chunk['kb_id'] = kb['kb_id'] if hasattr(kb, '__getitem__') else kb.get('kb_id')
+                        chunk['is_qa'] = False
+                    all_chunks.extend(result.get('results', []))
+                    if result.get('results'):
+                        all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'dify'})
+                    logger.info(f"[QA] ask | KB={kb['kb_name']} got {len(result.get('results',[]))} chunks")
+                else:
+                    logger.error(f"[QA] ask | KB={kb['kb_name']} retrieve error: {result['error']}")
+            except Exception as e:
+                logger.error(f"[QA] ask | KB={kb['kb_name']} exception: {e}")
 
     if not all_chunks:
         logger.warn(f"[QA] ask | no chunks retrieved for query='{query[:80]}'")

@@ -45,7 +45,7 @@
         <div class="page-header">
             <div>
                 <h1 class="page-title">知识库配置</h1>
-                <p style="color:#888; margin-top:4px; font-size:14px;">管理 Dify 知识库配置</p>
+                <p style="color:#888; margin-top:4px; font-size:14px;">管理 Dify 知识库和本地问答知识库</p>
             </div>
             {% if is_admin %}
             <button class="btn btn-primary" onclick="showCreateKB()">+ 添加知识库</button>
@@ -70,6 +70,7 @@
                 {% if kb.template_type == 'text_plain' %}<span style="font-size:12px;color:#555;">通用分段</span>
                 {% elif kb.template_type == 'hierarchical_full' %}<span style="font-size:12px;color:#555;">父子分段-全文</span>
                 {% elif kb.template_type == 'hierarchical_paragraph' %}<span style="font-size:12px;color:#555;">父子分段-段落</span>
+                {% elif kb.template_type == 'qa' %}<span style="font-size:12px;color:#065;background:#e6ffe6;padding:1px 6px;border-radius:4px;">问答库</span>
                 {% elif kb.template_type %}<span style="font-size:12px;color:#888;">{{ kb.template_type }}</span>
                 {% else %}<span style="font-size:12px;color:#999;">-</span>{% endif %}
             </td>
@@ -94,7 +95,9 @@
                 <a href="/admin/kbs?edit={{ kb.kb_id }}" class="btn btn-outline" style="padding:4px 12px; font-size:12px;">编辑</a>
                 <button class="btn btn-danger" style="padding:4px 12px; font-size:12px;" onclick="deleteKB({{ kb.kb_id }}, '{{ kb.kb_name }}')">删除</button>
                 {% endif %}
-                {% if kb.kb_id in accessible_kb_ids %}
+                {% if kb.template_type == 'qa' %}
+                <button class="btn btn-outline" style="padding:2px 8px;font-size:12px;" onclick="showQAManage({{ kb.kb_id }}, '{{ kb.kb_name }}')">问答管理</button>
+                {% elif kb.kb_id in accessible_kb_ids %}
                 <button class="kb-doc-toggle" onclick="toggleDocs({{ kb.kb_id }})">文件 ▾</button>
                 {% endif %}
                 {% endif %}
@@ -164,11 +167,19 @@
                         <small>适用于高度结构化文档（表格、多级标题）。每个段落为父chunk，最细粒度子块，适合精确匹配场景。</small>
                     </div>
                 </label>
+                <label class="tmpl-card" onclick="selectTmpl('qa')" style="grid-column:1/-1;">
+                    <input type="radio" name="template_id" value="qa" style="display:none;">
+                    <div class="tmpl-inner">
+                        <strong>问答知识库</strong>
+                        <span>local · 无需 Dify · CSV 导入</span>
+                        <small>适合 FAQ、产品手册等固定问答场景。导入格式：CSV 两列（问题,答案），首行可为表头，UTF-8 编码。</small>
+                    </div>
+                </label>
             </div>
             <div id="tmpl-error" style="color:#c5221f;font-size:13px;margin-bottom:8px;display:none;">请选择一个模板</div>
 
             <!-- 模型选择区域 -->
-            <div style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:8px; border:1px solid #e9ecef;">
+            <div id="model-config-section" style="margin-top:16px; padding:12px; background:#f8f9fa; border-radius:8px; border:1px solid #e9ecef;">
                 <div style="font-size:13px; font-weight:500; color:#495057; margin-bottom:10px;">模型配置（可选）</div>
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                     <div class="form-group" style="margin-bottom:0;">
@@ -206,6 +217,225 @@
 .tmpl-inner span { font-size:12px; color:#555; }
 .tmpl-inner small { font-size:11px; color:#888; }
 </style>
+
+<!-- 问答知识库管理弹窗 -->
+<div id="qaManageModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; justify-content:center; align-items:center;">
+    <div style="background:white; border-radius:12px; padding:28px; width:680px; max-width:90%; max-height:90vh; overflow-y:auto;">
+        <h3 style="margin-bottom:16px; font-size:16px;">问答管理 - <span id="qa-modal-kbname"></span></h3>
+
+        <!-- 统计 -->
+        <div style="display:flex; gap:12px; margin-bottom:16px;">
+            <div style="flex:1; background:#f0f7ff; border-radius:8px; padding:10px 14px;">
+                <div style="font-size:12px; color:#888;">问答对总数</div>
+                <div id="qa-stat-count" style="font-size:22px; font-weight:600; color:#1976d2;">-</div>
+            </div>
+            <div style="flex:1; background:#fff9e6; border-radius:8px; padding:10px 14px;">
+                <div style="font-size:12px; color:#888;">索引状态</div>
+                <div id="qa-stat-index" style="font-size:16px; font-weight:600; color:#f57c00;">-</div>
+            </div>
+        </div>
+
+        <!-- CSV 上传 -->
+        <div style="margin-bottom:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
+            <div style="font-size:13px; font-weight:500; margin-bottom:8px;">批量导入 CSV</div>
+            <form id="qa-csv-form" enctype="multipart/form-data" style="display:flex; gap:8px; align-items:center;">
+                <input type="file" name="file" accept=".csv,.txt" id="qa-csv-input" style="font-size:13px;">
+                <button type="button" class="btn btn-primary" style="padding:5px 14px; font-size:13px;" onclick="uploadQACSV()">导入</button>
+                <span id="qa-csv-err" style="color:#c5221f; font-size:12px;"></span>
+            </form>
+            <div style="font-size:11px; color:#aaa; margin-top:4px;">格式：问题,答案（首行可为表头）。CSV 文件请使用 UTF-8 编码。</div>
+        </div>
+
+        <!-- 手动添加 -->
+        <div style="margin-bottom:16px;">
+            <div style="font-size:13px; font-weight:500; margin-bottom:8px;">手动添加</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr auto; gap:8px; align-items:start;">
+                <input id="qa-new-question" placeholder="问题" style="padding:6px 8px; border:1px solid #ddd; border-radius:6px; font-size:13px;">
+                <textarea id="qa-new-answer" placeholder="答案" rows="3" style="padding:6px 8px; border:1px solid #ddd; border-radius:6px; font-size:13px; resize:vertical; width:100%;"></textarea>
+                <button class="btn btn-primary" style="padding:6px 14px; font-size:13px;" onclick="addQAItem()">添加</button>
+            </div>
+        </div>
+
+        <!-- 问答列表 -->
+        <div style="margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="font-size:13px; font-weight:500;">问答列表 <span id="qa-items-info" style="font-weight:normal; color:#888;"></span></div>
+                <button class="btn btn-danger" style="padding:3px 10px; font-size:12px;" onclick="clearAllQA()">清空全部</button>
+            </div>
+            <div id="qa-items-list" style="max-height:300px; overflow-y:auto; border:1px solid #e0e0e0; border-radius:8px;">
+                <div style="padding:16px; color:#999; text-align:center; font-size:13px;">加载中…</div>
+            </div>
+            <div id="qa-pagination" style="display:flex; justify-content:center; gap:6px; margin-top:8px; align-items:center;"></div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">
+            <button class="btn btn-secondary" onclick="hideModal('qaManageModal')">关闭</button>
+            <button class="btn btn-primary" onclick="rebuildQAIndex()">重建索引</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.qa-item-row { display:flex; gap:8px; padding:8px 12px; border-bottom:1px solid #f0f0f0; align-items:start; }
+.qa-item-row:last-child { border-bottom:none; }
+.qa-item-row:hover { background:#fafafa; }
+.qa-item-q { flex:1; font-size:13px; color:#333; }
+.qa-item-a { flex:1; font-size:13px; color:#666; }
+.qa-item-del { color:#c00; cursor:pointer; font-size:12px; padding:2px 6px; border:none; background:none; }
+.qa-item-del:hover { color:#fff; background:#fee; border-radius:4px; }
+</style>
+
+<script>
+var _currentQAPage = 1;
+var _currentQATotal = 0;
+var _currentQALimit = 50;
+
+function showQAManage(kbId, kbName) {
+    _currentQAKbId = kbId;
+    _currentQAPage = 1;
+    document.getElementById('qa-modal-kbname').textContent = kbName;
+    document.getElementById('qaManageModal').style.display = 'flex';
+    loadQAModal();
+}
+
+function loadQAModal() {
+    if (!_currentQAKbId) return;
+    var kbId = _currentQAKbId;
+    // 加载统计
+    fetch('/admin/kbs/' + kbId + '/qa/count')
+        .then(r => r.json())
+        .then(d => {
+            document.getElementById('qa-stat-count').textContent = d.count !== undefined ? d.count : '-';
+        });
+    // 加载索引状态
+    fetch('/admin/kbs/' + kbId + '/qa/index-status')
+        .then(r => r.json())
+        .then(d => {
+            document.getElementById('qa-stat-index').textContent = d.indexed ? '已建索引' : '未建索引';
+        })
+        .catch(() => {
+            document.getElementById('qa-stat-index').textContent = '未知';
+        });
+    // 加载列表（带分页）
+    fetch('/admin/kbs/' + kbId + '/qa/items?page=' + _currentQAPage + '&limit=' + _currentQALimit)
+        .then(r => r.json())
+        .then(d => {
+            _currentQATotal = d.total || 0;
+            _currentQAPage = d.page || 1;
+            _currentQALimit = d.limit || 50;
+            var list = document.getElementById('qa-items-list');
+            var info = document.getElementById('qa-items-info');
+            var pg = document.getElementById('qa-pagination');
+            info.textContent = d.total !== undefined ? '(' + d.total + '条)' : '';
+            if (!d.items || !d.items.length) {
+                list.innerHTML = '<div style="padding:16px; color:#999; text-align:center; font-size:13px;">暂无问答对，请上传 CSV 或手动添加</div>';
+                pg.innerHTML = '';
+                return;
+            }
+            list.innerHTML = d.items.map(function(it) {
+                return '<div class="qa-item-row">' +
+                    '<div class="qa-item-q">'+escHtml(it.question)+'</div>' +
+                    '<div class="qa-item-a">'+escHtml(it.answer)+'</div>' +
+                    '<button class="qa-item-del" onclick="deleteQAItem('+it.id+')">删除</button>' +
+                    '</div>';
+            }).join('');
+            // 渲染分页
+            renderQAPagination(d.total, d.page, d.limit);
+        })
+        .catch(e => {
+            document.getElementById('qa-items-list').innerHTML = '<div style="padding:16px; color:#c00; text-align:center; font-size:13px;">加载失败</div>';
+            document.getElementById('qa-pagination').innerHTML = '';
+        });
+}
+
+function renderQAPagination(total, page, limit) {
+    var pg = document.getElementById('qa-pagination');
+    var totalPages = Math.ceil(total / limit);
+    if (totalPages <= 1) { pg.innerHTML = ''; return; }
+    var html = '';
+    if (page > 1) {
+        html += '<button style="padding:3px 10px; font-size:12px; border:1px solid #ddd; border-radius:4px; background:white; cursor:pointer;" onclick="goQAPage(' + (page-1) + ')">上一页</button>';
+    }
+    html += '<span style="font-size:12px; color:#666;">第 ' + page + ' / ' + totalPages + ' 页，共 ' + total + ' 条</span>';
+    if (page < totalPages) {
+        html += '<button style="padding:3px 10px; font-size:12px; border:1px solid #ddd; border-radius:4px; background:white; cursor:pointer;" onclick="goQAPage(' + (page+1) + ')">下一页</button>';
+    }
+    pg.innerHTML = html;
+}
+
+function goQAPage(p) {
+    _currentQAPage = p;
+    loadQAModal();
+}
+
+function uploadQACSV() {
+    var input = document.getElementById('qa-csv-input');
+    var errEl = document.getElementById('qa-csv-err');
+    errEl.textContent = '';
+    if (!input.files.length) { errEl.textContent = '请选择文件'; return; }
+    var formData = new FormData();
+    formData.append('file', input.files[0]);
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/upload', {method:'POST', body:formData})
+        .then(r => r.json())
+        .then(d => {
+            if (d.error) { errEl.textContent = d.error; return; }
+            input.value = '';
+            // 上传后回到第1页
+            _currentQAPage = 1;
+            loadQAModal();
+        })
+        .catch(e => { errEl.textContent = e.message; });
+}
+
+function addQAItem() {
+    var q = document.getElementById('qa-new-question').value.trim();
+    var a = document.getElementById('qa-new-answer').value.trim();
+    if (!q || !a) return;
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/add', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({question:q, answer:a})
+    })
+    .then(r => r.json())
+    .then(d => {
+        if (d.error) return;
+        document.getElementById('qa-new-question').value = '';
+        document.getElementById('qa-new-answer').value = '';
+        _currentQAPage = 1;
+        loadQAModal();
+    });
+}
+
+function deleteQAItem(itemId) {
+    if (!confirm('确认删除？')) return;
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/delete/' + itemId, {method:'POST'})
+        .then(r => r.json())
+        .then(d => { if (!d.error) { _currentQAPage = 1; loadQAModal(); } });
+}
+
+function clearAllQA() {
+    if (!confirm('确认清空全部问答对？此操作不可恢复！')) return;
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/clear', {method:'POST'})
+        .then(r => r.json())
+        .then(d => { if (!d.error) { _currentQAPage = 1; loadQAModal(); } });
+}
+
+function rebuildQAIndex() {
+    if (!confirm('确认重建索引？')) return;
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '重建中…';
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/rebuild-index', {method:'POST'})
+        .then(r => r.json())
+        .then(d => {
+            btn.disabled = false;
+            btn.textContent = '重建索引';
+            if (d.error) { alert(d.error); return; }
+            loadQAModal();
+        })
+        .catch(e => { btn.disabled = false; btn.textContent = '重建索引'; });
+}
+</script>
 
 <script>
 function showCreateKB() {
@@ -257,6 +487,11 @@ function selectTmpl(id) {
     document.querySelectorAll('.tmpl-card').forEach(c => c.classList.remove('selected'));
     document.querySelector(`input[value="${id}"]`).checked = true;
     document.querySelector(`input[value="${id}"]`).closest('.tmpl-card').classList.add('selected');
+    // 问答库不需要 Dify 模型配置，隐藏模型选择区
+    var modelSection = document.getElementById('model-config-section');
+    if (modelSection) {
+        modelSection.style.display = (id === 'qa') ? 'none' : 'block';
+    }
 }
 
 function loadModelLists() {

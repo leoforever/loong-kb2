@@ -71,25 +71,62 @@ def init_db():
             )
         ''')
 
-        # Knowledge base configs (points to external Dify API)
+        # Knowledge base configs (points to external Dify API or local QA)
+        # Note: dify_api_url/key/dataset_id allow NULL for local QA KBs
         c.execute('''
             CREATE TABLE IF NOT EXISTS kb_configs (
                 kb_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kb_name TEXT NOT NULL,
                 description TEXT,
-                dify_api_url TEXT NOT NULL,
-                dify_api_key TEXT NOT NULL,
-                dify_dataset_id TEXT NOT NULL,
+                dify_api_url TEXT,
+                dify_api_key TEXT,
+                dify_dataset_id TEXT,
+                template_type TEXT DEFAULT 'dify',
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # Role <-> KB permissions (which roles can access which KBs)
-        # can_access: 可查看文件列表（不能上传/删除文档）
-        # can_edit: 可上传/删除文档（包含 can_access，但不能编辑/删除知识库）
-        # can_manage: 可修改知识库配置（名称/描述），不可修改 ID（包含 can_edit 和 can_access）
-        # admin 角色默认拥有所有权限，且不可被修改
+        # Migrate old kb_configs: if old table has NOT NULL on dify_* columns,
+        # it can't store QA KBs. We detect this by trying to insert a NULL.
+        # Strategy: rename old table -> create new schema -> copy data back.
+        try:
+            # Test if old schema allows NULL for dify_dataset_id
+            c.execute("INSERT INTO kb_configs (kb_name, dify_dataset_id) VALUES ('__test__', NULL)")
+            c.execute("DELETE FROM kb_configs WHERE kb_name = '__test__'")
+            logger.info("[DB Migrate] kb_configs schema already compatible")
+        except Exception:
+            # Old schema has NOT NULL - need to migrate
+            try:
+                # 1. Rename old table
+                c.execute("ALTER TABLE kb_configs RENAME TO _kb_configs_old")
+                # 2. Create new table with nullable columns
+                c.execute('''
+                    CREATE TABLE kb_configs (
+                        kb_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        kb_name TEXT NOT NULL,
+                        description TEXT,
+                        dify_api_url TEXT,
+                        dify_api_key TEXT,
+                        dify_dataset_id TEXT,
+                        template_type TEXT DEFAULT 'dify',
+                        is_active INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                # 3. Copy data (template_type from old rows will be NULL -> default to 'dify')
+                c.execute("INSERT INTO kb_configs (kb_id, kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, is_active, created_at) SELECT kb_id, kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, is_active, created_at FROM _kb_configs_old")
+                # 4. Drop old table
+                c.execute("DROP TABLE _kb_configs_old")
+                logger.info("[DB Migrate] kb_configs migrated: NOT NULL constraints removed")
+            except Exception as e2:
+                # Fallback: try to recover
+                try:
+                    c.execute("ALTER TABLE kb_configs RENAME TO _kb_configs_broken")
+                except Exception:
+                    pass
+                logger.error(f"[DB Migrate] kb_configs migration failed: {e2}")
+
         c.execute('''
             CREATE TABLE IF NOT EXISTS role_kb_permissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +155,12 @@ def init_db():
                 FOREIGN KEY (kb_id) REFERENCES kb_configs(kb_id) ON DELETE SET NULL
             )
         ''')
+
+        # Add template_type column to existing kb_configs (may not exist on old schemas)
+        try:
+            c.execute("ALTER TABLE kb_configs ADD COLUMN template_type TEXT DEFAULT 'dify'")
+        except Exception:
+            pass  # column already exists
 
         c.execute('CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_user_roles_role ON user_roles(role_id)')
@@ -253,6 +296,9 @@ def update_kb(kb_id, name, description, dify_api_url, dify_api_key, dify_dataset
 
 
 def delete_kb(kb_id):
+    # 清理 FAISS 文件（如果是本地问答库）
+    from app.services.local_qa import delete_local_qa_kb
+    delete_local_qa_kb(kb_id)
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM role_kb_permissions WHERE kb_id = ?', (kb_id,))
@@ -359,3 +405,27 @@ def delete_user_history(user_id):
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM query_log WHERE user_id = ?', (user_id,))
+
+
+# ==============================
+# Local QA KB operations
+# ==============================
+
+def create_local_qa_kb(name, description=None):
+    """创建本地问答知识库（不走 Dify）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO kb_configs (kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type)
+            VALUES (?, ?, NULL, NULL, NULL, ?)
+        ''', (name, description or '', 'qa'))
+        return c.lastrowid
+
+
+def is_local_qa_kb(kb_id):
+    """判断指定 KB 是否为本地问答知识库"""
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return False
+    template = kb['template_type'] if 'template_type' in kb.keys() else None
+    return template == 'qa'
