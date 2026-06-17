@@ -859,8 +859,8 @@ def upload_qa_csv(kb_id):
         return jsonify({'error': '未找到有效问答对（需要 question/问题 和 answer/答案 列）'}), 400
 
     from app.services.local_qa import add_local_qa_items
-    count = add_local_qa_items(kb_id, qa_list)
-    return jsonify({'ok': True, 'added': count})
+    result = add_local_qa_items(kb_id, qa_list)
+    return jsonify({'ok': True, **result})
 
 
 @bp.route('/admin/kbs/<int:kb_id>/qa/add', methods=['POST'])
@@ -878,8 +878,8 @@ def add_qa_item(kb_id):
         return jsonify({'error': '问题不能为空'}), 400
 
     from app.services.local_qa import add_local_qa_items
-    count = add_local_qa_items(kb_id, [{'question': q, 'answer': a}])
-    return jsonify({'ok': True, 'added': count})
+    result = add_local_qa_items(kb_id, [{'question': q, 'answer': a}])
+    return jsonify({'ok': True, **result})
 
 
 @bp.route('/admin/kbs/<int:kb_id>/qa/items', methods=['GET'])

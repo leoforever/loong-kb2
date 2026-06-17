@@ -380,7 +380,11 @@ function uploadQACSV() {
         .then(d => {
             if (d.error) { errEl.textContent = d.error; return; }
             input.value = '';
-            // 上传后回到第1页
+            var msg = '导入完成：新增 ' + d.added + ' 条';
+            if (d.skipped > 0) msg += '，跳过（已存在）' + d.skipped + ' 条';
+            errEl.style.color = '#0a7';
+            errEl.textContent = msg;
+            setTimeout(function() { errEl.textContent = ''; errEl.style.color = ''; }, 4000);
             _currentQAPage = 1;
             loadQAModal();
         })
@@ -398,7 +402,13 @@ function addQAItem() {
     })
     .then(r => r.json())
     .then(d => {
-        if (d.error) return;
+        if (d.error) {
+            alert(d.error);
+            return;
+        }
+        if (d.skipped > 0) {
+            alert('已更新 ' + d.skipped + ' 条（问题已存在）');
+        }
         document.getElementById('qa-new-question').value = '';
         document.getElementById('qa-new-answer').value = '';
         _currentQAPage = 1;

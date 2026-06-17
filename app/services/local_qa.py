@@ -120,32 +120,56 @@ def search_local_qa(kb_id, query, top_k=3):
 
 def add_local_qa_items(kb_id, qa_list):
     """
-    批量添加问答对到指定 KB。
+    批量添加问答对到指定 KB，全局去重（按问题文本）。
+    已存在的问题直接跳过，不覆盖。
     qa_list: [{question, answer}, ...]
-    返回新增数量
+    返回 {"added": N, "skipped": N, "total": M}
     """
     items = _load_meta(kb_id)
-    start_id = len(items)
+    existing_questions = {it['question']: it['id'] for it in items}
 
-    for i, qa in enumerate(qa_list):
-        q = qa['question']
-        a = qa['answer']
+    added = 0
+    skipped = 0
+    next_id = max([it['id'] for it in items] or [0]) + 1
+
+    for qa in qa_list:
+        q = qa['question'].strip()
+        a = qa['answer'].strip()
+        if not q or not a:
+            skipped += 1
+            continue
+        if q in existing_questions:
+            # 已存在则覆盖答案
+            old_id = existing_questions[q]
+            for it in items:
+                if it['id'] == old_id:
+                    it['answer'] = a
+                    try:
+                        it['embedding'] = embed_text(q)
+                    except Exception as e:
+                        logger.error(f"[LocalQA] embed failed for '{q[:30]}': {e}")
+                    break
+            skipped += 1
+            continue
         try:
             emb = embed_text(q)
         except Exception as e:
-            logger.error(f"[LocalQA] embed failed for question '{q[:30]}': {e}")
+            logger.error(f"[LocalQA] embed failed for '{q[:30]}': {e}")
             emb = None
         items.append({
-            'id': start_id + i,
+            'id': next_id,
             'question': q,
             'answer': a,
             'embedding': emb,
         })
+        existing_questions[q] = next_id
+        next_id += 1
+        added += 1
 
     _save_meta(kb_id, items)
     _rebuild_index(kb_id, items)
-    logger.info(f"[LocalQA] added {len(qa_list)} items to kb_id={kb_id}, total={len(items)}")
-    return len(qa_list)
+    logger.info(f"[LocalQA] kb_id={kb_id} added={added} skipped={skipped} total={len(items)}")
+    return {'added': added, 'skipped': skipped, 'total': len(items)}
 
 
 def delete_local_qa_item(kb_id, item_id):
