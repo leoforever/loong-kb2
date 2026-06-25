@@ -385,6 +385,14 @@ def patch_dataset(dataset_id, indexing_technique=None, embedding_model=None,
     """
     PATCH /datasets/{dataset_id} 配置索引/检索参数。
     可用字段：indexing_technique, embedding_model, reranking_model, retrieval_model
+
+    embedding_model: str (model name) 或 (model_name, provider_name) 元组
+    reranking_model: str (model name) 或 (model_name, provider_name) 元组
+      - 官方 API 要求 reranking_model 嵌套在 retrieval_model 内部
+      - 若传入 reranking_model 但未传 retrieval_model，自动先 GET 当前
+        retrieval_model_dict，合并 reranking 后再 PATCH 完整 retrieval_model
+    retrieval_model: 完整检索模型对象（官方格式），会整体替换服务端配置
+
     注意：doc_form 和 process_rule 不支持 PATCH，必须通过上传初始化文档来固化。
     """
     import requests
@@ -397,9 +405,49 @@ def patch_dataset(dataset_id, indexing_technique=None, embedding_model=None,
     if indexing_technique:
         payload['indexing_technique'] = indexing_technique
     if embedding_model:
-        payload['embedding_model'] = embedding_model
-    if reranking_model:
-        payload['reranking_model'] = reranking_model
+        if isinstance(embedding_model, tuple):
+            payload['embedding_model'] = embedding_model[0]
+            payload['embedding_provider_name'] = embedding_model[1]
+        else:
+            payload['embedding_model'] = embedding_model
+
+    # reranking_model 必须放在 retrieval_model 内部，不能作为顶层字段
+    # 若调用方传了 reranking_model 但没传 retrieval_model，先拉取当前配置再合并
+    if reranking_model and not retrieval_model:
+        try:
+            get_url = f'{base}/datasets/{dataset_id}'
+            logger.info(f"[Dify] patch_dataset: need retrieval_model_dict, fetching {get_url}")
+            get_resp = requests.get(
+                get_url,
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                timeout=15
+            )
+            if get_resp.status_code != 200:
+                return {'error': f'GET dataset failed: HTTP {get_resp.status_code}'}
+            current = get_resp.json()
+            retrieval_model = current.get('retrieval_model_dict', {})
+        except Exception as e:
+            logger.error(f"[Dify] patch_dataset GET retrieval_model_dict failed: {e}")
+            return {'error': str(e)}
+
+        # 构造 reranking_model 对象
+        if isinstance(reranking_model, tuple):
+            rerank_cfg = {
+                'reranking_model_name': reranking_model[0],
+                'reranking_provider_name': reranking_model[1],
+            }
+        else:
+            rerank_cfg = {
+                'reranking_model_name': reranking_model,
+                'reranking_provider_name': 'langgenius/siliconflow/siliconflow',
+            }
+
+        # 合并 reranking 相关字段（保留现有 weights / top_k / score_threshold 等）
+        retrieval_model = dict(retrieval_model)  # 避免修改原字典
+        retrieval_model['reranking_enable'] = True
+        retrieval_model['reranking_mode'] = 'reranking_model'
+        retrieval_model['reranking_model'] = rerank_cfg
+
     if retrieval_model:
         payload['retrieval_model'] = retrieval_model
 
