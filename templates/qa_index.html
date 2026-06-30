@@ -162,6 +162,7 @@ async function sendQuery() {
     messages.scrollTop = messages.scrollHeight;
 
     let sources = [];
+    let chunks = [];
 
     try {
         const resp = await fetch('/qa/ask', {
@@ -205,23 +206,56 @@ async function sendQuery() {
                         contentDiv.appendChild(document.createTextNode(data.token));
                         messages.scrollTop = messages.scrollTop;
                     }
-                    if (data.answer) {
-                        contentDiv.innerHTML = '';
+                    if (data.answer !== undefined) {
+                        // done 事件传来完整答案（含追加的参考来源），直接使用
                         contentDiv.textContent = data.answer;
                     }
-                    if (data.done) { sources = data.sources || []; }
+                    if (data.done) {
+                        sources = data.sources || [];
+                        chunks = data.chunks || [];
+                    }
                 } catch {}
             }
         }
 
         if (currentSessionId !== thisSessionId) return;
 
-        if (sources.length > 0) {
+        if (sources.length > 0 || chunks.length > 0) {
             const sourcesDiv = document.createElement('div');
             sourcesDiv.className = 'kb-sources';
-            sourcesDiv.innerHTML = '来源知识库：' + sources.map(function(s) {
-                return '<span class="kb-badge">' + escapeHtml(s.kb_name) + '</span>';
-            }).join('');
+
+            // 折叠式参考来源详情
+            const header = document.createElement('a');
+            header.href = 'javascript:void(0)';
+            header.style.cssText = 'display:flex;align-items:center;gap:4px;color:#1976d2;text-decoration:none;font-size:13px;margin-bottom:6px;';
+            header.innerHTML = '<span style="font-size:11px;">▸</span> 参考来源（知识库 / 文档 / 片段）';
+            let detailDiv = null;
+            header.addEventListener('click', function() {
+                if (!detailDiv) {
+                    detailDiv = document.createElement('div');
+                    detailDiv.style.cssText = 'margin-top:6px;padding:8px;background:#f5f5f5;border-radius:6px;font-size:12px;';
+                    const seenKeys = new Set();
+                    chunks.forEach(function(c, i) {
+                        const kb = c.kb_name || '未知知识库';
+                        const doc = c.doc_name || '';
+                        const key = kb + '|' + doc;
+                        if (seenKeys.has(key)) return;
+                        seenKeys.add(key);
+                        const label = doc ? `${i+1}. 【${kb}】${doc}` : `${i+1}. 【${kb}】`;
+                        const p = document.createElement('p');
+                        p.style.cssText = 'margin:0 0 6px 0;line-height:1.4;word-break:break-all;';
+                        const content = (c.content || '').substring(0, 120).replace(/\n/g, ' ').trim();
+                        p.innerHTML = `<div style="color:#333;font-weight:500;">${label}</div><div style="color:#888;margin-top:2px;">片段：<span style="color:#666;">${escapeHtml(content)}</span>...</div>`;
+                        detailDiv.appendChild(p);
+                    });
+                    header.querySelector('span').textContent = '▾';
+                    header.parentNode.insertBefore(detailDiv, header.nextSibling);
+                } else {
+                    detailDiv.style.display = detailDiv.style.display === 'none' ? '' : 'none';
+                    header.querySelector('span').textContent = detailDiv.style.display === 'none' ? '▸' : '▾';
+                }
+            });
+            sourcesDiv.appendChild(header);
             assistantDiv.appendChild(sourcesDiv);
         }
 

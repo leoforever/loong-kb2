@@ -14,6 +14,92 @@ bp = Blueprint('qa', __name__)
 logger = logging.getLogger(__name__)
 
 
+def _clean_answer_reference(answer):
+    """去掉 LLM 自己加的参考来源句（避免与折叠来源重复）"""
+    import re
+    # 匹配 "以上信息来源于..."、"来源："、"参考来源：" 等段尾引用句
+    patterns = [
+        r'\s*以上信息来源于[^\n。]*[。。]?$',
+        r'\s*来源[：:][^\n。]*[。]?$',
+        r'\s*参考来源[：:][^\n]*$',
+    ]
+    for p in patterns:
+        answer = re.sub(p, '', answer.strip())
+    return answer
+
+
+def _rerank_chunks(query, chunks):
+    """
+    用 reranker 模型对 chunks 重新打分，过滤低相关片段。
+    如果未配置 reranker 或请求失败，直接返回原始 chunks。
+    """
+    if not chunks:
+        return chunks
+
+    cfg = None
+    try:
+        from app.config import get_reranker_config
+        cfg = get_reranker_config()
+    except Exception:
+        return chunks
+
+    if not cfg.get('enabled'):
+        return chunks
+
+    provider = cfg.get('provider')
+    threshold = cfg.get('score_threshold', 0.3)
+    provider_cfg = cfg.get(provider, {})
+    api_key = provider_cfg.get('api_key')
+    model = provider_cfg.get('model')
+
+    if not api_key or not model:
+        logger.warning("[QA] reranker enabled but api_key or model missing")
+        return chunks
+
+    try:
+        import requests
+        documents = [c.get('content', '') for c in chunks]
+        resp = requests.post(
+            'https://api.siliconflow.cn/v1/rerank',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'model': model,
+                'query': query,
+                'documents': documents,
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"[QA] rerank failed: HTTP {resp.status_code}")
+            return chunks
+
+        results = resp.json().get('results', [])
+        # 建立 index → rerank_score 映射
+        score_map = {r['index']: r['relevance_score'] for r in results}
+
+        reranked = []
+        for i, c in enumerate(chunks):
+            score = score_map.get(i, 0.0)
+            c = dict(c)
+            c['rerank_score'] = score
+            if score >= threshold:
+                reranked.append(c)
+                logger.info(f"[QA] rerank | keep idx={i} score={score:.4f} doc={c.get('doc_name', '')}")
+            else:
+                logger.info(f"[QA] rerank | drop idx={i} score={score:.4f} doc={c.get('doc_name', '')}")
+
+        # 按 rerank_score 降序重排
+        reranked.sort(key=lambda x: x.get('rerank_score', 0), reverse=True)
+        return reranked
+
+    except Exception as e:
+        logger.error(f"[QA] rerank exception: {e}")
+        return chunks
+
+
 def get_user_accessible_kbs(user_id):
     """Return list of kb_configs that the user can access (via their roles)"""
     from app.models import get_user_roles, get_all_kbs, get_kb_permissions_for_roles
@@ -199,8 +285,12 @@ def ask():
 
     all_chunks.sort(key=lambda x: x.get('score', 0), reverse=True)
     top_chunks = all_chunks[:8]
-    chunk_texts = [c['content'] for c in top_chunks]
     logger.info(f"[QA] ask | total chunks={len(all_chunks)}, using top {len(top_chunks)} for LLM")
+
+    # Reranker 精筛（如果配置了）
+    top_chunks = _rerank_chunks(query, top_chunks)
+    chunk_texts = [c['content'] for c in top_chunks]
+    logger.info(f"[QA] ask | after reranker: {len(top_chunks)} chunks remain")
 
     # Stream the answer as SSE
     @stream_with_context
@@ -221,9 +311,11 @@ def ask():
         logger.info(f"[QA] ask | answer complete, length={len(answer_text)}")
         # Save to DB
         save_query_log(user_id, accessible_kbs[0]['kb_id'], query, answer_text, 0)
+        # Clean LLM's self-added reference sentences
+        answer_text = _clean_answer_reference(answer_text)
         # Add to conversation cache
         _conversation_cache[user_id].append({'role': 'assistant', 'content': answer_text})
-        yield f"data: {json.dumps({'done': True, 'sources': all_sources})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'sources': all_sources, 'chunks': top_chunks, 'answer': answer_text})}\n\n"
 
     return Response(
         generate(),

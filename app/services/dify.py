@@ -378,11 +378,14 @@ class DifyKBService:
             # Dify v1.x API: content nested in segment, score at top level
             segment = item.get('segment', {})
             content = segment.get('content', '') or item.get('content', '')
-            doc_name = (item.get('document') or {}).get('name', '') if isinstance(item.get('document'), dict) else ''
+            # document 嵌套在 segment.document 里
+            doc_info = segment.get('document', {})
+            doc_name = doc_info.get('name', '') if isinstance(doc_info, dict) else ''
             results.append({
                 'content': content,
                 'score': item.get('score', 0.0),
                 'doc_name': doc_name,
+                'document_id': segment.get('document_id', '') or item.get('document_id', ''),
                 'segment_id': segment.get('id', '') or item.get('id', ''),
             })
         return {'results': results, 'total': len(results)}

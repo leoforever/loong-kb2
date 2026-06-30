@@ -86,3 +86,18 @@ def get_embedding_config():
         'openai': emb.get('openai', {'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'text-embedding-3-small'}),
         'siliconflow': emb.get('siliconflow', {'api_key': '', 'model': 'BAAI/bge-m3'}),
     }
+
+
+def get_reranker_config():
+    cfg = load_config()
+    rer = cfg.get('reranker', {})
+    provider = rer.get('provider')
+    if not provider:
+        return {'enabled': False}
+    sf = rer.get('siliconflow', {})
+    return {
+        'enabled': True,
+        'provider': provider,
+        'score_threshold': rer.get('score_threshold', 0.3),
+        provider: sf,
+    }
