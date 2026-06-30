@@ -85,7 +85,11 @@ class MiniMaxBackend:
         self.max_tokens = cfg.get('max_tokens', 2048)
 
     def _post(self, payload, stream=False, timeout=120):
-        url = f"{self.base_url.rstrip('/')}/v1/messages"
+        base = self.base_url.rstrip('/')
+        if base.endswith('/v1'):
+            url = f'{base}/messages'
+        else:
+            url = f'{base}/v1/messages'
         resp = requests.post(
             url,
             headers={
@@ -201,7 +205,11 @@ class QwenBackend:
         self.max_tokens = cfg.get('max_tokens', 2048)
 
     def _post(self, payload, stream=False, timeout=300):
-        url = f"{self.base_url.rstrip('/')}/v1/chat/completions"
+        base = self.base_url.rstrip('/')
+        if base.endswith('/v1'):
+            url = f'{base}/chat/completions'
+        else:
+            url = f'{base}/v1/chat/completions'
         resp = requests.post(
             url,
             headers={'Content-Type': 'application/json'},

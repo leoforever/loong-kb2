@@ -45,7 +45,11 @@ def _embed_ollama(text: str, cfg: dict) -> list[float]:
 
 
 def _embed_openai(text: str, cfg: dict) -> list[float]:
-    url = f"{cfg['base_url'].rstrip('/')}/embeddings"
+    base = cfg['base_url'].rstrip('/')
+    if base.endswith('/v1'):
+        url = f'{base}/embeddings'
+    else:
+        url = f'{base}/v1/embeddings'
     resp = requests.post(
         url,
         json={"input": text, "model": cfg['model']},
@@ -53,12 +57,15 @@ def _embed_openai(text: str, cfg: dict) -> list[float]:
         timeout=30,
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data["data"][0]["embedding"]
+    return resp.json()["data"][0]["embedding"]
 
 
 def _embed_siliconflow(text: str, cfg: dict) -> list[float]:
-    url = "https://api.siliconflow.cn/v1/embeddings"
+    base = cfg.get('base_url', 'https://api.siliconflow.cn').rstrip('/')
+    if base.endswith('/v1'):
+        url = f'{base}/embeddings'
+    else:
+        url = f'{base}/v1/embeddings'
     resp = requests.post(
         url,
         json={"input": text, "model": cfg['model']},
@@ -66,8 +73,7 @@ def _embed_siliconflow(text: str, cfg: dict) -> list[float]:
         timeout=30,
     )
     resp.raise_for_status()
-    data = resp.json()
-    return data["data"][0]["embedding"]
+    return resp.json()["data"][0]["embedding"]
 
 
 def get_embedding_dim() -> int:

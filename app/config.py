@@ -84,7 +84,7 @@ def get_embedding_config():
         'provider': emb.get('provider', 'ollama'),
         'ollama': emb.get('ollama', {'url': 'http://127.0.0.1:11434/api/embeddings', 'model': 'bge-m3:latest'}),
         'openai': emb.get('openai', {'api_key': '', 'base_url': 'https://api.openai.com/v1', 'model': 'text-embedding-3-small'}),
-        'siliconflow': emb.get('siliconflow', {'api_key': '', 'model': 'BAAI/bge-m3'}),
+        'siliconflow': emb.get('siliconflow', {'api_key': '', 'model': 'BAAI/bge-m3', 'base_url': 'https://api.siliconflow.cn'}),
     }
 
 

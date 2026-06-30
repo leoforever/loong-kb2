@@ -42,6 +42,7 @@ embedding:
   siliconflow:
     api_key: "YOUR_SILICONFLOW_API_KEY"
     model: "BAAI/bge-m3"
+    base_url: "https://api.siliconflow.cn"
 
 # Reranker 模型配置（QA 回答前对 Dify 返回的 chunks 二次精筛）
 # provider: siliconflow | None（不启用则跳过 reranker，直接用 Dify 原排序）
