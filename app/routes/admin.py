@@ -1159,3 +1159,247 @@ def qa_rebuild_index(kb_id):
     if result.get('error'):
         return jsonify({'error': result['error']}), 500
     return jsonify({'ok': True, 'indexed_count': result.get('indexed_count', 0)})
+
+
+# ==================== Document Download ====================
+
+@bp.route('/admin/kbs/<int:kb_id>/documents/<doc_id>/download')
+@kb_edit_required
+def download_single_document(kb_id, doc_id):
+    """
+    下载知识库中的单个文档原文。
+    Dify API: GET /v1/datasets/{dataset_id}/documents/{document_id}/download
+    返回文件流。
+    """
+    from flask import request
+    from app.models import get_kb_by_id, is_local_qa_kb
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return '知识库不存在', 404
+    kb = dict(kb)
+    if is_local_qa_kb(kb_id):
+        return '问答知识库无单独文件可下载', 400
+
+    # 优先用前端传来的文件名（Dify doc.name），其次 fallback
+    raw_name = request.args.get('filename', '')
+    if raw_name:
+        import urllib.parse
+        filename = urllib.parse.unquote(raw_name)
+    else:
+        filename = None
+
+    from app.services.dify import build_dify_service
+    dify = build_dify_service(kb)
+    content, _ = dify.download_document(doc_id, filename=filename)
+    if isinstance(content, dict) and content.get('error'):
+        return content['error'], 500
+
+    # 用确定的文件名（优先用传入的，否则用 Dify 返回的）
+    import urllib.parse
+    final_name = filename or 'document'
+    # RFC 5987: filename*=UTF-8''<percent-encoded>
+    encoded = urllib.parse.quote(final_name, safe='')
+    # 同时设置 ASCII-safe 的 filename（对不支持 RFC 5987 的旧浏览器兼容）
+    from flask import Response
+    resp = Response(
+        content,
+        mimetype='application/octet-stream',
+        headers={
+            'Content-Disposition': f"attachment; filename={encoded}; filename*=UTF-8''{encoded}",
+            'Content-Length': str(len(content)),
+        },
+    )
+    return resp
+
+
+@bp.route('/admin/kbs/<int:kb_id>/documents/download-all', methods=['POST'])
+@kb_edit_required
+def download_all_documents(kb_id):
+    """
+    打包下载知识库所有文档（ZIP）。
+    如果文档数 <= 100，直接调 Dify download-zip 接口；
+    如果 > 100，分批调用后本地合并为单个 ZIP。
+    """
+    from app.models import get_kb_by_id, is_local_qa_kb
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return jsonify({'error': '知识库不存在'}), 404
+    kb = dict(kb)
+    if is_local_qa_kb(kb_id):
+        return jsonify({'error': '问答知识库请使用「导出问答对」功能'}), 400
+
+    from app.services.dify import build_dify_service
+    dify = build_dify_service(kb)
+
+    # 先获取所有文档 ID
+    doc_list_result = dify.list_documents()
+    if 'error' in doc_list_result:
+        return jsonify({'error': doc_list_result['error']}), 500
+    docs = doc_list_result.get('documents', [])
+    if not docs:
+        return jsonify({'error': '知识库中没有文档'}), 400
+
+    doc_ids = [d['id'] for d in docs]
+    kb_name = kb.get('kb_name', 'knowledge_base')
+
+    import zipfile, io, os
+
+    # Dify download-zip 每次最多 100 条
+    BATCH = 100
+    all_zips = []
+
+    for i in range(0, len(doc_ids), BATCH):
+        batch = doc_ids[i:i + BATCH]
+        zip_bytes, _ = dify.download_documents_zip(batch, kb_name)
+        if isinstance(zip_bytes, dict) and zip_bytes.get('error'):
+            return jsonify({'error': f'第 {i//BATCH+1} 批下载失败: {zip_bytes["error"]}'}), 500
+        all_zips.append(zip_bytes)
+
+    # 如果只有一批，直接返回 Dify 的 ZIP
+    if len(all_zips) == 1:
+        zip_bytes = all_zips[0]
+        from flask import Response
+        return Response(
+            zip_bytes,
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_documents.zip",
+                'Content-Length': str(len(zip_bytes)),
+            },
+        )
+
+    # 多批：本地解压再重新打包为单一 ZIP
+    try:
+        master_zip = io.BytesIO()
+        with zipfile.ZipFile(master_zip, 'w', zipfile.ZIP_DEFLATED) as mz:
+            for batch_idx, zbytes in enumerate(all_zips):
+                zf = zipfile.ZipFile(io.BytesIO(zbytes))
+                for item in zf.infolist():
+                    new_name = f"batch{batch_idx+1}/{item.filename}"
+                    mz.writestr(new_name, zf.read(item.filename))
+                zf.close()
+        master_zip.seek(0)
+        from flask import Response
+        return Response(
+            master_zip.getvalue(),
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_all_documents.zip",
+                'Content-Length': str(master_zip.getbuffer().nbytes),
+            },
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Merge ZIP failed: {e}")
+        return jsonify({'error': f'合并 ZIP 失败: {e}'}), 500
+
+
+# ==================== Download All KBs ====================
+
+@bp.route('/admin/kbs/download-all-zip', methods=['POST'])
+@admin_required
+def download_all_kbs_zip():
+    """
+    打包下载所有知识库（文档知识库 + 问答知识库）。
+    返回单一 ZIP，按知识库名称建文件夹。
+    """
+    import zipfile, io, csv
+    from app.models import get_all_kbs, get_kb_by_id, is_local_qa_kb
+
+    master = io.BytesIO()
+    with zipfile.ZipFile(master, 'w', zipfile.ZIP_DEFLATED) as mz:
+        kbs = get_all_kbs()
+        for kb in kbs:
+            kb_id = kb['kb_id']
+            kb_name = (kb.get('kb_name') or f'kb_{kb_id}').replace('/', '_').replace('\\', '_')
+            folder = kb_name
+
+            if is_local_qa_kb(kb_id):
+                # 导出问答对 CSV
+                from app.services.local_qa import list_local_qa_items
+                items, total = list_local_qa_items(kb_id, offset=0, limit=999999)
+                buf = io.StringIO()
+                writer = csv.writer(buf)
+                writer.writerow(['问题', '答案'])
+                for it in items:
+                    writer.writerow([it.get('question', ''), it.get('answer', '')])
+                mz.writestr(f'{folder}/qa_export.csv', buf.getvalue().encode('utf-8'))
+            else:
+                # 文档知识库：通过 Dify API 下载
+                from app.services.dify import build_dify_service
+                dify = build_dify_service(dict(kb))
+                doc_result = dify.list_documents()
+                if 'error' in doc_result:
+                    continue
+                docs = doc_result.get('documents', [])
+                if not docs:
+                    continue
+                doc_ids = [d['id'] for d in docs]
+
+                BATCH = 100
+                for i in range(0, len(doc_ids), BATCH):
+                    batch = doc_ids[i:i + BATCH]
+                    zip_bytes, _ = dify.download_documents_zip(batch, kb_name)
+                    if isinstance(zip_bytes, dict) and zip_bytes.get('error'):
+                        continue
+                    # 解压 Dify 返回的 ZIP，提取文件放入对应文件夹
+                    try:
+                        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+                        for item in zf.infolist():
+                            # 文件名保持原样（Dify ZIP 里已含知识库名）
+                            data = zf.read(item.filename)
+                            # 放到统一的 {kb_name}/ 下，去掉 Dify 返回的内层目录前缀
+                            fname = item.filename.split('/')[-1] if '/' in item.filename else item.filename
+                            if fname:
+                                mz.writestr(f'{folder}/{fname}', data)
+                        zf.close()
+                    except Exception:
+                        continue
+
+    master.seek(0)
+    from flask import Response
+    return Response(
+        master.getvalue(),
+        mimetype='application/zip',
+        headers={
+            'Content-Disposition': "attachment; filename*=UTF-8''all_knowledge_bases.zip",
+        },
+    )
+
+
+# ==================== QA Export ====================
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/export')
+@kb_edit_required
+def export_qa_csv(kb_id):
+    """
+    导出问答知识库所有问答对为 CSV 文件。
+    文件名: {kb_name}_qa_export.csv
+    """
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    from app.models import get_kb_by_id
+    kb = get_kb_by_id(kb_id)
+    kb = dict(kb)
+    kb_name = (kb.get('kb_name') or 'qa_export').replace('/', '_').replace('\\', '_')
+
+    from app.services.local_qa import list_local_qa_items
+    items, total = list_local_qa_items(kb_id, offset=0, limit=999999)
+
+    import csv, io
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(['问题', '答案'])
+    for it in items:
+        writer.writerow([it.get('question', ''), it.get('answer', '')])
+
+    from flask import Response
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv; charset=utf-8',
+        headers={
+            'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_qa_export.csv",
+        },
+    )

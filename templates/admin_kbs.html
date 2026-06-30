@@ -52,6 +52,7 @@
             {% endif %}
             {% if is_admin %}
             <button class="btn btn-secondary" style="margin-left:8px;" onclick="syncKBs()">🔄 同步 Dify</button>
+            <button class="btn btn-secondary" style="margin-left:8px;" onclick="downloadAllKBsZip()">📥 打包下载全部知识库</button>
             {% endif %}
         </div>
 
@@ -729,6 +730,7 @@ function renderDocs(kbId, docs, statusLabel, statusClass) {
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;text-align:left;color:#999;font-size:12px;">${doc.word_count ? doc.word_count.toLocaleString() + ' 字' : ''}</td>
             <td style="padding:3px 4px;border-bottom:1px solid #eee;" class="actions-cell">
+                <a href="/admin/kbs/${kbId}/documents/${doc.id}/download?filename=${encodeURIComponent(doc.name)}" class="btn btn-outline" style="padding:2px 6px;font-size:11px;color:#1976d2;border-color:#1976d2;" title="下载" target="_blank">下载</a>
                 <span class="del-btn-wrapper" data-doc-id="${doc.id}"></span>
             </td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
@@ -818,6 +820,58 @@ async function deleteDoc(kbId, docId) {
     } catch (e) {
         alert('删除失败: ' + e.message);
     }
+}
+
+function downloadKBZip(kbId) {
+    if (!confirm('确认打包下载该知识库所有文档？')) return;
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '打包中…';
+    fetch(`/admin/kbs/${kbId}/documents/download-all`, { method: 'POST' })
+        .then(resp => {
+            if (!resp.ok) throw new Error('下载失败 HTTP ' + resp.status);
+            return resp.blob();
+        })
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
+        .catch(e => { alert('下载失败: ' + e.message); })
+        .finally(() => { btn.disabled = false; btn.textContent = '📥 下载全部'; });
+}
+
+function downloadAllKBsZip() {
+    if (!confirm('打包下载所有知识库（包含问答知识库）？\n文档知识库打包 ZIP，问答知识库导出 CSV。\n此操作需要较长时间，请耐心等待。')) return;
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '打包中…';
+    fetch('/admin/kbs/download-all-zip', { method: 'POST' })
+        .then(resp => {
+            if (!resp.ok) throw new Error('下载失败 HTTP ' + resp.status);
+            return resp.blob();
+        })
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'all_knowledge_bases.zip';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
+        .catch(e => { alert('批量下载失败: ' + e.message); })
+        .finally(() => { btn.disabled = false; btn.textContent = '📥 打包下载全部知识库'; });
+}
+
+function downloadQAExport(kbId, kbName) {
+    window.location.href = `/admin/kbs/${kbId}/qa/export`;
 }
 
 function loadEditModelConfig(kbId) {

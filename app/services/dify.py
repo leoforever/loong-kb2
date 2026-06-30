@@ -199,6 +199,103 @@ class DifyKBService:
             logger.error(f"[Dify] delete_document failed: {e}")
             return {'error': str(e)}
 
+    def download_document(self, doc_id, filename=None):
+        """
+        下载单个文档原文。
+        Dify API: GET /v1/datasets/{dataset_id}/documents/{document_id}/download
+        返回 (content_bytes, suggested_filename) 或 ({'error': str}, None)
+
+        Dify 返回 JSON {"url": "/files/..."}，需要再请求该 URL 获取真实文件。
+        """
+        import re
+        try:
+            url = f'{self.api_url}/v1/datasets/{self.dataset_id}/documents/{doc_id}/download'
+            logger.info(f"[Dify] Download doc | url={url}")
+            resp = requests.get(url, headers={'Authorization': f'Bearer {self.api_key}'}, timeout=60)
+            if resp.status_code != 200:
+                return {'error': f'HTTP {resp.status_code}: {resp.text[:200]}'}, None
+
+            # 解析 JSON 响应中的 signed URL（相对路径如 /files/...）
+            try:
+                data = resp.json()
+                signed_url = data.get('url', '')
+                if signed_url.startswith('/files/'):
+                    # 再次请求 signed URL，base 不带 /v1
+                    file_base = self.api_url.rstrip('/')  # http://10.40.65.209
+                    file_resp = requests.get(
+                        f'{file_base}{signed_url}',
+                        headers={'Authorization': f'Bearer {self.api_key}'},
+                        timeout=60, stream=True,
+                    )
+                    if file_resp.status_code != 200:
+                        return {'error': f'Signed URL HTTP {file_resp.status_code}'}, None
+                    content = file_resp.content
+                    # 从 signed URL 的 query string 中解析原文件名（Content-Disposition 不可用）
+                    if not filename:
+                        fn_match = re.search(r'filename=([^&]+)', signed_url)
+                        filename = 'document'
+                        if fn_match:
+                            import urllib.parse
+                            filename = urllib.parse.unquote(fn_match.group(1).strip('"\''))
+                else:
+                    # 直接返回二进制
+                    content = resp.content
+            except (ValueError, KeyError):
+                # 不是 JSON，直接当二进制处理
+                content = resp.content
+
+            # 尝试从 Content-Disposition 取文件名
+            cd = resp.headers.get('Content-Disposition', '') or ''
+            if not filename or filename == 'document':
+                m = re.search(r'filename[*]?=([^;]+)', cd)
+                if m:
+                    fn = m.group(1).strip('"\'')
+                    if fn.startswith("UTF-8''"):
+                        filename = fn[7:]
+                    else:
+                        filename = fn
+            if not filename:
+                filename = 'document'
+            return content, filename
+        except Exception as e:
+            logger.error(f"[Dify] download_document failed: {e}")
+            return {'error': str(e)}, None
+
+    def download_documents_zip(self, doc_ids, kb_name=''):
+        """
+        批量下载多个文档（最多100个）为 ZIP。
+        Dify API: POST /v1/datasets/{dataset_id}/documents/download-zip
+        返回 (zip_bytes, zip_filename) 或 ({'error': str}, None)
+        """
+        import zipfile, io
+        try:
+            url = f'{self.api_url}/v1/datasets/{self.dataset_id}/documents/download-zip'
+            logger.info(f"[Dify] Download zip | url={url} | docs={len(doc_ids)}")
+            resp = requests.post(
+                url,
+                json={'document_ids': doc_ids},
+                headers={'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'},
+                timeout=120, stream=True,
+            )
+            if resp.status_code != 200:
+                return {'error': f'HTTP {resp.status_code}: {resp.text[:200]}'}, None
+            zip_bytes = resp.content
+            # Dify 返回的 ZIP 文件名通常为 dataset_name_documents.zip
+            cd = resp.headers.get('Content-Disposition', '')
+            import re
+            zip_name = f'{kb_name}_documents.zip' if kb_name else 'documents.zip'
+            m = re.search(r'filename[*]?=([^;]+)', cd)
+            if m:
+                fn = m.group(1).strip('"\'')
+                if fn.startswith("UTF-8''"):
+                    fn = fn[7:]
+                if fn.endswith('.zip'):
+                    zip_name = fn
+            return zip_bytes, zip_name
+        except Exception as e:
+            logger.error(f"[Dify] download_documents_zip failed: {e}")
+            return {'error': str(e)}, None
+
     def list_documents(self, page=1, page_size=100):
         """
         获取知识库下的所有文档列表（自动翻页）。
