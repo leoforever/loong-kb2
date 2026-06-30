@@ -49,10 +49,15 @@ def _rerank_chunks(query, chunks):
     provider = cfg.get('provider')
     threshold = cfg.get('score_threshold', 0.3)
     base_url = cfg.get('base_url', '').rstrip('/')
+    # 兼容 base_url 已含 /v1 和不含 /v1 两种写法
+    if base_url.endswith('/v1'):
+        rerank_url = f'{base_url}/rerank'
+    else:
+        rerank_url = f'{base_url}/v1/rerank'
+
     provider_cfg = cfg.get(provider, {})
     api_key = provider_cfg.get('api_key')
     model = provider_cfg.get('model')
-    rerank_url = f'{base_url}/v1/rerank'
 
     if not api_key or not model:
         logger.warning("[QA] reranker enabled but api_key or model missing")

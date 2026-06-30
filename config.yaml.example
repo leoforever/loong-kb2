@@ -27,3 +27,28 @@ qwen:
 dify:
   api_url: "http://YOUR_DIFY_SERVER/v1"
   api_key: "YOUR_DIFY_API_KEY"
+
+# Embedding 模型配置（用于本地 QA 知识库向量检索）
+# provider: ollama | openai | siliconflow
+embedding:
+  provider: "siliconflow"
+  ollama:
+    url: "http://127.0.0.1:11434/api/embeddings"
+    model: "bge-m3:latest"
+  openai:
+    api_key: "YOUR_OPENAI_API_KEY"
+    base_url: "https://api.openai.com/v1"
+    model: "text-embedding-3-small"
+  siliconflow:
+    api_key: "YOUR_SILICONFLOW_API_KEY"
+    model: "BAAI/bge-m3"
+
+# Reranker 模型配置（QA 回答前对 Dify 返回的 chunks 二次精筛）
+# provider: siliconflow | None（不启用则跳过 reranker，直接用 Dify 原排序）
+reranker:
+  provider: "siliconflow"
+  score_threshold: 0.3   # rerank score 低于此值的 chunk 丢弃
+  siliconflow:
+    api_key: "YOUR_SILICONFLOW_API_KEY"
+    model: "BAAI/bge-reranker-v2-m3"
+    base_url: "https://api.siliconflow.cn"   # 末尾不带 /v1，程序自动拼接
