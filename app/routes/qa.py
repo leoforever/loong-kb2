@@ -48,9 +48,11 @@ def _rerank_chunks(query, chunks):
 
     provider = cfg.get('provider')
     threshold = cfg.get('score_threshold', 0.3)
+    base_url = cfg.get('base_url', '').rstrip('/')
     provider_cfg = cfg.get(provider, {})
     api_key = provider_cfg.get('api_key')
     model = provider_cfg.get('model')
+    rerank_url = f'{base_url}/v1/rerank'
 
     if not api_key or not model:
         logger.warning("[QA] reranker enabled but api_key or model missing")
@@ -60,7 +62,7 @@ def _rerank_chunks(query, chunks):
         import requests
         documents = [c.get('content', '') for c in chunks]
         resp = requests.post(
-            'https://api.siliconflow.cn/v1/rerank',
+            rerank_url,
             headers={
                 'Authorization': f'Bearer {api_key}',
                 'Content-Type': 'application/json',

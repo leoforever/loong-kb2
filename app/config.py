@@ -94,10 +94,11 @@ def get_reranker_config():
     provider = rer.get('provider')
     if not provider:
         return {'enabled': False}
-    sf = rer.get('siliconflow', {})
+    sf = rer.get(provider, {})
     return {
         'enabled': True,
         'provider': provider,
         'score_threshold': rer.get('score_threshold', 0.3),
+        'base_url': sf.get('base_url', ''),
         provider: sf,
     }
