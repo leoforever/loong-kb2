@@ -1,6 +1,5 @@
 *.backup
 config.yaml
-config.yaml.example
 *.pyc
 *.pyo
 .env
@@ -13,3 +12,5 @@ venv/
 *.egg-info/
 dist/
 build/
+nohup.out
+__pycache__/
