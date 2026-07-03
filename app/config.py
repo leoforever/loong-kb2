@@ -69,14 +69,6 @@ def get_qwen_config():
     }
 
 
-def get_dify_defaults():
-    cfg = load_config()
-    dify = cfg.get('dify', {})
-    return {
-        'api_url': dify.get('api_url', ''),
-        'api_key': dify.get('api_key', ''),
-    }
-
 def get_embedding_config():
     cfg = load_config()
     emb = cfg.get('embedding', {})
@@ -101,4 +93,13 @@ def get_reranker_config():
         'score_threshold': rer.get('score_threshold', 0.3),
         'base_url': sf.get('base_url', ''),
         provider: sf,
+    }
+
+def get_rag_server_config():
+    cfg = load_config()
+    rag = cfg.get('rag_server', {})
+    return {
+        'enabled': rag.get('enabled', True),
+        'base_url': rag.get('base_url', 'http://localhost:5002').rstrip('/'),
+        'local_mode': rag.get('local_mode', False),
     }

@@ -1,29 +1,27 @@
 # 龙芯知识库 (Loong KB)
 
-基于 Dify + Flask 的私有知识库问答系统，支持多用户权限管理和多知识库并行检索。
+基于 RAG-Server + Flask 的私有知识库问答系统，支持多用户权限管理和多知识库并行检索。
 
 ## 核心功能
 
-- **多知识库管理**：支持从 Dify 同步知识库，每个知识库独立管理文档
+- **多知识库管理**：支持 RAG-Server 文档知识库和本地问答知识库
 - **RAG 问答**：多知识库并行检索 + LLM 汇总生成答案，支持流式输出
-- **问答知识库**：纯本地 CSV 导入，无需 Dify，适合 FAQ、产品手册等固定问答场景
+- **问答知识库**：纯本地 CSV 导入，无需外部服务，适合 FAQ、产品手册等固定问答场景
 - **权限体系**：基于角色的权限控制，精细到每个知识库的访问/编辑/管理权限
 - **多 LLM 支持**：通过配置切换 MiniMax / Qwen 等后端
 
 ## 知识库类型
 
-系统支持 4 种知识库模板：
-
 | 模板 | 说明 | 依赖 |
 |------|------|------|
-| 通用分段 | 自动分句，检索粒度均匀 | Dify |
-| 父子分段-全文 | 整篇为父 chunk，子块 512 字，保留完整上下文 | Dify |
-| 父子分段-段落 | 每个段落为父 chunk，子块 128 字，适合精确匹配 | Dify |
-| 问答知识库 | 纯本地管理，CSV 导入问答对，不依赖 Dify | 无 |
+| 通用分段 | 自动分句，检索粒度均匀 | RAG-Server |
+| 父子分段-全文 | 整篇为父 chunk，子块 512 字，保留完整上下文 | RAG-Server |
+| 父子分段-段落 | 每个段落为父 chunk，子块 128 字，适合精确匹配 | RAG-Server |
+| 问答知识库 | 纯本地管理，CSV 导入问答对 | 无 |
 
 ## 技术栈
 
-Flask · SQLite · FAISS · Dify API · gevent
+Flask · SQLite · FAISS · RAG-Server · gevent
 
 ## 快速部署
 
@@ -38,10 +36,18 @@ pip install -r requirements.txt
 
 ```bash
 cp config.yaml.example config.yaml
-# 编辑 config.yaml，填入 Dify API 和 LLM 配置
+# 编辑 config.yaml，填入 RAG-Server 和 LLM 配置
 ```
 
-### 3. 初始化并启动
+### 3. 启动 RAG-Server（如尚未运行）
+
+```bash
+cd /root/scripts/rag_segment_server
+python3 server.py &
+# RAG-Server 默认监听 localhost:5002
+```
+
+### 4. 初始化并启动
 
 ```bash
 python setup.py
@@ -50,7 +56,7 @@ python setup.py
 python run.py   # 开发调试（代码变更自动 reload）
 ```
 
-访问 `http://localhost:5001`，初始账号：`admin` / `admin123`
+访问 `http://localhost:5003`，初始账号：`admin` / `admin123`
 
 ## 配置说明
 
@@ -71,12 +77,14 @@ minimax:
   model: "MiniMax-M2.7"
 ```
 
-### Dify
+### RAG-Server
+
+RAG-Server 独立部署，配置在 `config.yaml` 的 `rag_server` 节。RAG-Server 负责文档解析、分段、嵌入和检索。
 
 ```yaml
-dify:
-  api_url: "http://YOUR_DIFY_SERVER/v1"
-  api_key: "YOUR_DIFY_KEY"
+rag_server:
+  base_url: "http://localhost:5002"
+  enabled: true
 ```
 
 ## 问答知识库使用指南
@@ -85,7 +93,7 @@ dify:
 
 1. 以管理员身份登录，进入「知识库配置」
 2. 点击「+ 添加知识库」
-3. 选择「问答知识库」模板，填写名称和描述（无需填写 Dify 相关配置）
+3. 选择「问答知识库」模板，填写名称和描述
 4. 点击创建
 
 ### 导入问答对
@@ -111,7 +119,7 @@ dify:
 
 ### 检索流程
 
-问答知识库的检索独立于 Dify 知识库，流程如下：
+问答知识库的检索独立于 RAG 知识库，流程如下：
 
 ```
 用户问题
@@ -119,9 +127,9 @@ dify:
 ┌─────────────────────────────────────┐
 │  并行检索所有可访问知识库              │
 │                                     │
-│  Dify 知识库：                       │
+│  RAG 知识库：                       │
 │    hybrid_search + reranking        │
-│    top_k=20                         │
+│    top_k=20                        │
 │                                     │
 │  问答知识库：                         │
 │    用户问题 → 嵌入向量               │
@@ -144,7 +152,7 @@ LLM 生成答案（流式返回）
 ./start.sh    # 启动服务
 ./stop.sh     # 停止服务
 ./deploy.sh   # 完整部署（停旧 → 安装依赖 → 初始化 → 启动）
-python setup.py   # 初始化（新建管理员账号、同步 Dify 知识库）
+python setup.py   # 初始化（新建管理员账号、初始化角色）
 ```
 
 ## 目录结构
@@ -153,7 +161,7 @@ python setup.py   # 初始化（新建管理员账号、同步 Dify 知识库）
 loong-kb/
 ├── app/
 │   ├── routes/       # Flask 路由（qa.py, admin.py, auth.py）
-│   ├── services/     # 业务逻辑（Dify、LLM、本地问答）
+│   ├── services/     # 业务逻辑（RAG-Server、LLM、本地问答）
 │   ├── models.py     # 数据库模型
 │   └── templates/    # Jinja2 模板
 ├── cache/            # SQLite 数据库文件

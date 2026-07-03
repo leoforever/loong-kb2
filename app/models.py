@@ -81,6 +81,7 @@ def init_db():
                 dify_api_url TEXT,
                 dify_api_key TEXT,
                 dify_dataset_id TEXT,
+                rag_dataset_id TEXT,
                 template_type TEXT DEFAULT 'dify',
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -159,6 +160,11 @@ def init_db():
         # Add template_type column to existing kb_configs (may not exist on old schemas)
         try:
             c.execute("ALTER TABLE kb_configs ADD COLUMN template_type TEXT DEFAULT 'dify'")
+        except Exception:
+            pass  # column already exists
+
+        try:
+            c.execute("ALTER TABLE kb_configs ADD COLUMN rag_dataset_id TEXT")
         except Exception:
             pass  # column already exists
 
@@ -261,14 +267,25 @@ def remove_user_role(user_id, role_id):
 # KB config operations
 # ==============================
 
-def create_kb(name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type=None):
+def create_kb(name, description, template_type=None, rag_dataset_id=None):
+    """创建知识库记录（RAG-Server 模式，dify_* 字段不再使用）"""
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute('''
-            INSERT INTO kb_configs (kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type))
+            INSERT INTO kb_configs (kb_name, description, template_type, rag_dataset_id)
+            VALUES (?, ?, ?, ?)
+        ''', (name, description, template_type, rag_dataset_id))
         return c.lastrowid
+
+
+def update_kb(kb_id, name, description, template_type=None):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            UPDATE kb_configs
+            SET kb_name=?, description=?, template_type=?
+            WHERE kb_id=?
+        ''', (name, description, template_type, kb_id))
 
 
 def get_all_kbs():
@@ -285,20 +302,19 @@ def get_kb_by_id(kb_id):
         return c.fetchone()
 
 
-def update_kb(kb_id, name, description, dify_api_url, dify_api_key, dify_dataset_id):
-    with get_db_conn() as conn:
-        c = conn.cursor()
-        c.execute('''
-            UPDATE kb_configs
-            SET kb_name=?, description=?, dify_api_url=?, dify_api_key=?, dify_dataset_id=?
-            WHERE kb_id=?
-        ''', (name, description, dify_api_url, dify_api_key, dify_dataset_id, kb_id))
-
-
 def delete_kb(kb_id):
     # 清理 FAISS 文件（如果是本地问答库）
     from app.services.local_qa import delete_local_qa_kb
     delete_local_qa_kb(kb_id)
+
+    # 删除 RAG-Server 上的知识库（如果 rag_dataset_id 存在）
+    kb = get_kb_by_id(kb_id)
+    if kb:
+        kb = dict(kb) if hasattr(kb, 'keys') else kb
+        if kb.get('rag_dataset_id'):
+            from app.services.rag_kb_service import delete_dataset
+            delete_dataset(kb['rag_dataset_id'])
+
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute('DELETE FROM role_kb_permissions WHERE kb_id = ?', (kb_id,))
@@ -429,3 +445,11 @@ def is_local_qa_kb(kb_id):
         return False
     template = kb['template_type'] if 'template_type' in kb.keys() else None
     return template == 'qa'
+
+
+def is_rag_kb(kb_id):
+    """判断指定 KB 是否为 RAG-Server 知识库"""
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return False
+    return bool(kb.get('rag_dataset_id'))

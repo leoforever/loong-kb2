@@ -25,14 +25,20 @@ def create_app():
     from app.models import init_db
     init_db()
 
-    # Auto-sync KBs from Dify on startup
-    from app.services.dify_sync import auto_sync_on_startup
-    auto_sync_on_startup()
-
     from app.routes import auth, qa, admin
     app.register_blueprint(auth.bp)
     app.register_blueprint(qa.bp)
     app.register_blueprint(admin.bp)
+
+    # RAG-Server Blueprint（local_mode=True 时直调核心函数）
+    from app.config import get_rag_server_config
+    rag_cfg = get_rag_server_config()
+    if rag_cfg.get('local_mode', False):
+        from app.rag_server import rag_bp
+        app.register_blueprint(rag_bp)
+        logger.info("RAG-Server Blueprint 已注册（local_mode=True）")
+    else:
+        logger.info(f"RAG-Server 独立模式，base_url={rag_cfg.get('base_url','')}")
 
     @app.before_request
     def load_current_user():

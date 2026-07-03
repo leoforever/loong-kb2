@@ -258,7 +258,7 @@ def get_role_permissions(role_id):
 @bp.route('/admin/kbs')
 def kbs():
     from app.models import get_all_kbs, get_all_roles, get_all_role_kb_permissions, get_kb_permissions_for_roles, get_user_roles, get_db_conn
-    from app.config import get_dify_defaults, get_embedding_config
+    from app.config import get_embedding_config
     # Permission check: must be admin OR have at least one KB with can_edit/can_manage
     user_id = session.get('user_id')
     if not user_id:
@@ -297,23 +297,9 @@ def kbs():
     kbs = get_all_kbs()
     roles = get_all_roles()
     perms = get_all_role_kb_permissions()
-    dify_defaults = get_dify_defaults()
     edit_kb_id = request.args.get('edit', type=int)
 
-    # 从 list_datasets() 一次性获取所有 Dify KB 的 embedding/reranking 模型信息
-    kb_model_info = {}  # dataset_id -> {'embedding_model': str, 'reranking_model': str}
-    from app.services.dify import list_datasets
-    try:
-        result = list_datasets()
-        for ds in result.get('data', []):
-            ds_id = ds.get('id', '')
-            emb = ds.get('embedding_model', '')
-            rer = ds.get('retrieval_model_dict', {}).get('reranking_model', {}).get('reranking_model_name', '')
-            kb_model_info[ds_id] = {'embedding_model': emb, 'reranking_model': rer}
-    except Exception:
-        pass
-
-    # 将模型信息挂到每个 kb 对象上
+    # 每个 KB 的 embedding/reranking 模型信息（从 RAG-Server config 读取）
     emb_cfg = get_embedding_config()
     local_emb_model = None
     if emb_cfg.get('provider') == 'siliconflow':
@@ -324,21 +310,21 @@ def kbs():
         local_emb_model = emb_cfg.get('openai', {}).get('model')
 
     for kb in kbs:
-        info = kb_model_info.get(kb.get('dify_dataset_id') or '', {})
-        kb['_embedding_model'] = info.get('embedding_model') or None
-        kb['_reranking_model'] = info.get('reranking_model') or None
-        # 问答库：用本地嵌入模型
-        if kb.get('template_type') == 'qa' and local_emb_model:
+        if kb.get('template_type') == 'qa':
             kb['_embedding_model'] = local_emb_model
             kb['_reranking_model'] = None
+        elif kb.get('rag_dataset_id'):
+            # RAG KB: embedding/reranking 由 RAG-Server 统一管理
+            kb['_embedding_model'] = local_emb_model
+            kb['_reranking_model'] = emb_cfg.get('reranker', {}).get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3')
 
     return render_template('admin_kbs.html', kbs=kbs, roles=roles, perms=perms,
-                            dify_defaults=dify_defaults, edit_kb_id=edit_kb_id,
+                            edit_kb_id=edit_kb_id,
                             is_admin=is_admin,
                             editable_kb_ids=editable_kb_ids,
                             accessible_kb_ids=accessible_kb_ids,
                             manageable_kb_ids=manageable_kb_ids,
-                            embedding_config=get_embedding_config())
+                            embedding_config=emb_cfg)
 
 
 def _user_has_any_kb_manage():
@@ -361,34 +347,20 @@ def _user_has_any_kb_manage():
     return any(p.get('can_manage') for p in perms.values())
 
 
-@bp.route('/admin/kbs/sync', methods=['POST'])
-@admin_required
-def sync_kbs():
-    """Sync KBs from Dify API to local DB"""
-    from app.services.dify_sync import sync_kbs_from_dify
-    created, deleted, errors = sync_kbs_from_dify()
-    if errors:
-        flash(f'同步完成：新增 {created} 个，删除 {deleted} 个。错误：{"; ".join(errors[:3])}', 'error')
-    else:
-        flash(f'同步完成：新增 {created} 个知识库，删除 {deleted} 个无效知识库。', 'success')
-    return redirect(url_for('admin.kbs'))
-
-
 @bp.route('/admin/kbs', methods=['POST'])
 @admin_required
 def create_kb():
+    """手动注册已有 RAG KB（通过 Rag dataset ID）"""
     kb_name = request.form.get('kb_name', '').strip()
     description = request.form.get('description', '').strip()
-    dify_dataset_id = request.form.get('dify_dataset_id', '').strip()
+    rag_dataset_id = request.form.get('rag_dataset_id', '').strip()
 
-    if not all([kb_name, dify_dataset_id]):
-        flash('知识库名称和 Dataset ID 不能为空', 'error')
+    if not kb_name:
+        flash('知识库名称不能为空', 'error')
         return redirect(url_for('admin.kbs'))
 
     from app.models import create_kb
-    from app.config import get_dify_defaults
-    cfg = get_dify_defaults()
-    kb_id = create_kb(kb_name, description, cfg['api_url'], cfg['api_key'], dify_dataset_id)
+    kb_id = create_kb(kb_name, description, template_type=None, rag_dataset_id=rag_dataset_id or None)
     flash(f'知识库 {kb_name} 创建成功', 'success')
     return redirect(url_for('admin.kbs'))
 
@@ -402,80 +374,106 @@ def edit_kb(kb_id):
         return '知识库不存在', 404
 
     if request.method == 'POST':
-        from app.config import get_dify_defaults
-        cfg = get_dify_defaults()
         update_kb(
             kb_id,
             request.form.get('kb_name', '').strip(),
             request.form.get('description', '').strip(),
-            cfg['api_url'],
-            cfg['api_key'],
-            kb['dify_dataset_id'],
+            request.form.get('template_type', '').strip() or None,
         )
-        # 更新嵌入/重排序模型
-        _kb = get_kb_by_id(kb_id)
-        if _kb and dict(_kb).get('template_type') != 'qa':
-            from app.services.dify import patch_dataset
-            emb = request.form.get('embedding_model', '').strip()
-            rer = request.form.get('reranking_model', '').strip()
-            if emb or rer:
-                def parse_model_str(s):
-                    if not s:
-                        return None
-                    # provider 是前3段，model 是剩余部分（model 名可能含 /）
-                    # value 格式: provider/model = langgenius/siliconflow/siliconflow/BAAI/bge-m3
-                    parts = s.split('/', 3)
-                    if len(parts) < 4:
-                        return (s, 'langgenius/siliconflow/siliconflow')
-                    return (parts[3], '/'.join(parts[:3]))
-                emb_cfg = parse_model_str(emb) if emb else None
-                rer_cfg = parse_model_str(rer) if rer else None
-                patch_dataset(
-                    kb['dify_dataset_id'],
-                    embedding_model=emb_cfg,
-                    reranking_model=rer_cfg,
-                )
         flash('知识库已更新', 'success')
         return redirect(url_for('admin.kbs'))
 
-    # GET: show edit form (redirect to kbs list with edit param)
     return redirect(url_for('admin.kbs', edit=kb_id))
 
 
 @bp.route('/admin/kbs/<int:kb_id>/delete', methods=['POST'])
 @kb_manage_required
 def delete_kb(kb_id):
-    """删除知识库：先删本地记录，Dify知识库同步删除 Dify dataset"""
-    from app.models import get_kb_by_id, is_local_qa_kb
-    from app.services.dify import delete_dataset
+    """删除知识库：删除本地记录，RAG KB 同时删除 RAG-Server 端数据"""
+    from app.models import get_kb_by_id, delete_kb as db_delete_kb
     kb = get_kb_by_id(kb_id)
     if not kb:
         flash('知识库不存在', 'error')
         return redirect(url_for('admin.kbs'))
 
-    dataset_id = kb['dify_dataset_id']
+    kb = dict(kb) if hasattr(kb, 'keys') else kb
+    rag_id = kb.get('rag_dataset_id')
 
-    # 删本地记录
-    from app.models import delete_kb as db_delete_kb
+    # 删除本地记录
     db_delete_kb(kb_id)
 
-    # 同步删除 Dify 上的 dataset（仅 Dify 类型知识库）
-    if dataset_id and not is_local_qa_kb(kb_id):
-        result = delete_dataset(dataset_id)
-        if 'error' in result:
-            flash(f'知识库已删除，但 Dify 同步删除失败：{result["error"]}', 'error')
-        else:
-            flash('知识库已删除', 'success')
-    else:
-        flash('知识库已删除', 'success')
+    # RAG KB：同时删除 RAG-Server 端数据
+    if rag_id:
+        from app.services.rag_kb_service import delete_dataset
+        delete_dataset(rag_id)
+
+    flash('知识库已删除', 'success')
     return redirect(url_for('admin.kbs'))
 
 
 @bp.route('/admin/kbs/from-template', methods=['POST'])
 @admin_required
+def create_kb_from_template_alias():
+    """别名路由：前端表单提交到 /admin/kbs/from-template"""
+    import logging
+    logger = logging.getLogger(__name__)
+    kb_name = request.form.get('kb_name', '').strip()
+    description = request.form.get('description', '').strip()
+    template_id = request.form.get('template_id', '').strip()
+    logger.warning(f"[DEBUG from-template] kb_name={kb_name!r} template_id={template_id!r}")
+
+    # 直接内联 create_kb_from_template 逻辑，不跨函数调用
+    if not kb_name:
+        flash('知识库名称不能为空', 'error')
+        return redirect(url_for('admin.kbs'))
+
+    # 问答知识库
+    if template_id == 'qa':
+        from app.models import create_local_qa_kb, get_role_by_name, set_kb_role_permission
+        kb_id = create_local_qa_kb(kb_name, description)
+        admin_role = get_role_by_name('admin')
+        if admin_role:
+            set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
+        flash(f'问答知识库「{kb_name}」创建成功', 'success')
+        return redirect(url_for('admin.kbs'))
+
+    # RAG-Server 文档知识库
+    TEMPLATE_MODE_MAP = {
+        'text_plain': 'general',
+        'hierarchical_full': 'parent_child',
+        'hierarchical_paragraph': 'paragraph',
+    }
+    if template_id not in TEMPLATE_MODE_MAP:
+        flash(f'未知模板: {template_id}', 'error')
+        return redirect(url_for('admin.kbs'))
+
+    from app.services.rag_kb_service import create_dataset
+    ds_result = create_dataset(kb_name, description)
+    if 'error' in ds_result:
+        logger.error(f"[DEBUG from-template] create_dataset error: {ds_result}")
+        flash(f'创建知识库失败：{ds_result["error"]}', 'error')
+        return redirect(url_for('admin.kbs'))
+
+    rag_dataset_id = ds_result['id']
+    from app.models import create_kb, get_role_by_name, set_kb_role_permission
+    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id)
+    admin_role = get_role_by_name('admin')
+    if admin_role:
+        set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
+    flash(f'知识库「{kb_name}」创建成功', 'success')
+    return redirect(url_for('admin.kbs'))
+
+
+@bp.route('/admin/kbs/create', methods=['POST'])
+@admin_required
 def create_kb_from_template():
-    """从模板创建知识库（在 Dify 创建 dataset + 写入本地记录）"""
-    import json
+    """从模板创建知识库（RAG-Server 模式）
+    
+    POST body:
+      kb_name, description, template_id
+      - template_id='qa': 本地问答知识库（不变）
+      - template_id='text_plain'|'hierarchical_full'|'hierarchical_paragraph': RAG-Server 文档知识库
+    """
     kb_name = request.form.get('kb_name', '').strip()
     description = request.form.get('description', '').strip()
     template_id = request.form.get('template_id', '').strip()
@@ -484,232 +482,50 @@ def create_kb_from_template():
         flash('知识库名称不能为空', 'error')
         return redirect(url_for('admin.kbs'))
 
-    # 解析用户选择的模型（格式："provider_name/model_name"）
-    embedding_model_str = request.form.get('embedding_model', '').strip()
-    reranking_model_str = request.form.get('reranking_model', '').strip()
-
-    def parse_model_str(s):
-        """解析 "provider/model" 或 "provider/sub/path/model" 格式
-        格式: langgenius/provider_sub/path/model_name
-        分界点: 从左到右第 3 个 '/' — 之前是 provider，之后是 model
-        例如:
-          langgenius/siliconflow/siliconflow/Qwen/Qwen3-Reranker-4B
-          langgenius/siliconflow/siliconflow/BAAI/bge-m3
-          langgenius/openai_api_compatible/openai_api_compatible/Qwen3-Embedding-4B
-        """
-        if not s or s == 'auto':
-            return None
-        # 找第3个 '/' 的位置
-        slash_count = 0
-        split_pos = -1
-        for i, ch in enumerate(s):
-            if ch == '/':
-                slash_count += 1
-                if slash_count == 3:
-                    split_pos = i
-                    break
-        if split_pos == -1:
-            # 不足 3 个 /，按旧逻辑从右端 split
-            parts = s.split('/')
-            if len(parts) < 2:
-                return (s, 'langgenius/siliconflow/siliconflow')
-            return (parts[-1], '/'.join(parts[:-1]))
-        provider = s[:split_pos]   # e.g. "langgenius/siliconflow/siliconflow"
-        model = s[split_pos + 1:]  # e.g. "Qwen/Qwen3-Reranker-4B"
-        return (model, provider)
-
-    user_embedding = parse_model_str(embedding_model_str)  # (model, provider) or None
-    user_reranking = parse_model_str(reranking_model_str)     # (model, provider) or None
-
-    # 模板参数
-    TEMPLATES = {
-        'text_plain': {
-            'doc_form': 'text_model',
-            'indexing_technique': 'high_quality',
-            'process_rule': {'mode': 'automatic'},
-            'embedding': ('BAAI/bge-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking': ('BAAI/bge-reranker-v2-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking_enable': True,
-            'weights': (0.7, 0.3),
-            'top_k': 10,
-            'score_threshold': 0.5,
-            'summary_enable': False,
-        },
-        'hierarchical_full': {
-            'doc_form': 'hierarchical_model',
-            'indexing_technique': 'high_quality',
-            'process_rule': {
-                'mode': 'hierarchical',
-                'rules': {
-                    'pre_processing_rules': [{'id': 'remove_extra_spaces', 'enabled': True}],
-                    'segmentation': {'separator': '\n\n', 'max_tokens': 1024, 'chunk_overlap': 0},
-                    'parent_mode': 'full-doc',
-                    'subchunk_segmentation': {'separator': '\n\n', 'max_tokens': 512, 'chunk_overlap': 0},
-                },
-            },
-            'embedding': ('BAAI/bge-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking': ('BAAI/bge-reranker-v2-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking_enable': True,
-            'weights': (0.7, 0.3),
-            'top_k': 10,
-            'score_threshold': 0.5,
-            'summary_enable': False,
-        },
-        'hierarchical_paragraph': {
-            'doc_form': 'hierarchical_model',
-            'indexing_technique': 'high_quality',
-            'process_rule': {
-                'mode': 'hierarchical',
-                'rules': {
-                    'pre_processing_rules': [{'id': 'remove_extra_spaces', 'enabled': True}],
-                    'segmentation': {'separator': '\n\n', 'max_tokens': 512, 'chunk_overlap': 0},
-                    'parent_mode': 'paragraph',
-                    'subchunk_segmentation': {'separator': '\n', 'max_tokens': 128, 'chunk_overlap': 0},
-                },
-            },
-            'embedding': ('BAAI/bge-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking': ('BAAI/bge-reranker-v2-m3', 'langgenius/siliconflow/siliconflow'),
-            'reranking_enable': True,
-            'weights': (0.7, 0.3),
-            'top_k': 10,
-            'score_threshold': 0.5,
-            'summary_enable': False,
-        },
-        'qa': {
-            'doc_form': 'qa',
-            'indexing_technique': 'high_quality',
-            'process_rule': None,
-            'embedding': None,
-            'reranking': None,
-            'reranking_enable': False,
-            'weights': None,
-            'top_k': 10,
-            'score_threshold': 0.0,
-            'summary_enable': False,
-        },
-    }
-
-    if template_id not in TEMPLATES:
-        flash(f'未知模板: {template_id}', 'error')
-        return redirect(url_for('admin.kbs'))
-
-    # ===== 问答知识库（本地 FAISS，不走 Dify） =====
+    # ===== 问答知识库（本地 FAISS） =====
     if template_id == 'qa':
         from app.models import create_local_qa_kb, get_role_by_name, set_kb_role_permission
         kb_id = create_local_qa_kb(kb_name, description)
-        # 给 admin 角色加权限
         admin_role = get_role_by_name('admin')
         if admin_role:
             set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
         flash(f'问答知识库「{kb_name}」创建成功', 'success')
         return redirect(url_for('admin.kbs'))
 
-    tmpl = dict(TEMPLATES[template_id])  # 深拷贝，避免污染模板
+    # ===== RAG-Server 文档知识库 =====
+    # 模板 → RAG-Server mode 映射
+    TEMPLATE_MODE_MAP = {
+        'text_plain': 'general',
+        'hierarchical_full': 'parent_child',
+        'hierarchical_paragraph': 'paragraph',
+    }
+    if template_id not in TEMPLATE_MODE_MAP:
+        flash(f'未知模板: {template_id}', 'error')
+        return redirect(url_for('admin.kbs'))
 
-    # 用用户选择的模型覆盖默认值
-    if user_embedding:
-        tmpl['embedding'] = user_embedding
-        logger.info(f"[CreateKB] user selected embedding: {user_embedding}")
-    if user_reranking:
-        tmpl['reranking'] = user_reranking
-        logger.info(f"[CreateKB] user selected reranking: {user_reranking}")
+    mode = TEMPLATE_MODE_MAP[template_id]
 
-    # 1. 在 Dify 创建空 dataset（name + description）
-    from app.services.dify import create_dataset
+    # 1. 在 RAG-Server 创建空 KB
+    from app.services.rag_kb_service import create_dataset
     ds_result = create_dataset(kb_name, description)
     if 'error' in ds_result:
-        flash(f'创建 Dify 知识库失败：{ds_result["error"]}', 'error')
+        flash(f'创建知识库失败：{ds_result["error"]}', 'error')
         return redirect(url_for('admin.kbs'))
 
-    dataset_id = ds_result['id']
+    rag_dataset_id = ds_result['id']
+    logger.info(f"[CreateKB] RAG KB created: {rag_dataset_id}")
 
-    # 2. PATCH 配置 indexing_technique + embedding + retrieval_model
-    # 注意：Dify 要求 reranking_enable=true 时 reranking_mode 必填（reranking_model | weighted_score）
-    # reranking_model 放在 retrieval_model 内部，不要通过 patch_dataset 顶层 reranking_model 参数传递（会重复）
-    from app.services.dify import patch_dataset
-    retrieval_cfg = {
-        'search_method': 'hybrid_search',
-        'reranking_enable': tmpl.get('reranking_enable', False),
-        'reranking_mode': 'reranking_model' if tmpl.get('reranking_enable') else None,
-        'reranking_model': {
-            'reranking_model_name': tmpl['reranking'][0],
-            'reranking_provider_name': tmpl['reranking'][1],
-        } if tmpl.get('reranking_enable') else None,
-        'top_k': tmpl.get('top_k', 10),
-        'score_threshold_enabled': bool(tmpl.get('score_threshold', 0)),
-        'score_threshold': tmpl.get('score_threshold', 0),
-        'weights': {
-            'weight_type': 'customized',
-            'keyword_setting': {'keyword_weight': tmpl.get('weights', (0.7, 0.3))[1]},
-            'vector_setting': {
-                'vector_weight': tmpl.get('weights', (0.7, 0.3))[0],
-                'embedding_model_name': tmpl['embedding'][0],
-                'embedding_provider_name': tmpl['embedding'][1],
-            },
-        },
-    }
-    patch_result = patch_dataset(
-        dataset_id,
-        embedding_model=tmpl['embedding'][0],
-        retrieval_model=retrieval_cfg,
-    )
-    if 'error' in patch_result:
-        flash(f'配置 Dify 知识库参数失败：{patch_result["error"]}', 'error')
-        return redirect(url_for('admin.kbs'))
-
-    # 3. 上传"初始化文档"以固化 doc_form + process_rule + indexing_technique
-    #    通过 create-by-text 接口，无需文件，上传后保留作为锚点
-    init_content = '初始化文档，仅用于触发 Dify 知识库配置固化。'
-
-    from app.services.dify import DifyKBService
-    dify_init = DifyKBService(dataset_id=dataset_id)
-
-    # 显式传入模板的 doc_form 和 process_rule，避免自动检测到 None
-    tmpl_doc_form = tmpl.get('doc_form', 'text_model')
-    tmpl_process_rule = tmpl.get('process_rule')
-
-    # 构造 summary_index_setting（仅当 summary_enable=True 时）
-    summary_index_setting = None
-    if tmpl.get('summary_enable'):
-        summary_model_name, summary_model_provider = tmpl.get('summary_model', ('minimax-text-01', 'langgenius/minimax/minimax'))
-        summary_index_setting = {
-            'enable': True,
-            'model_name': summary_model_name,
-            'model_provider_name': summary_model_provider,
-        }
-
-    upload_result = dify_init.upload_document_by_text(
-        text=init_content,
-        filename='__init__.txt',
-        doc_form=tmpl_doc_form,
-        process_rule=tmpl_process_rule,
-        indexing_technique=tmpl.get('indexing_technique', 'high_quality'),
-        summary_index_setting=summary_index_setting,
-    )
-
-    if 'error' in upload_result:
-        flash(f'初始化文档上传失败（配置未固化）：{upload_result["error"]}', 'error')
-        return redirect(url_for('admin.kbs'))
-
-    # 等待索引完成（初始化文档作为锚点保留，后续文档会自动沿用其 doc_form）
-    import time
-    doc_id = upload_result.get('document_id', '')
-    if doc_id:
-        time.sleep(5)  # 等待索引完成
-
-    # 4. 写入本地记录
+    # 2. 写入本地记录
     from app.models import create_kb
-    from app.config import get_dify_defaults
-    cfg = get_dify_defaults()
-    kb_id = create_kb(kb_name, description, cfg['api_url'], cfg['api_key'], dataset_id, template_id)
+    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id)
 
-    # 5. 给 admin 角色加权限（can_manage=1 包含 edit 和 access）
+    # 3. 给 admin 加权限
     from app.models import get_role_by_name, set_kb_role_permission
     admin_role = get_role_by_name('admin')
     if admin_role:
         set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
 
-    flash(f'知识库「{kb_name}」创建成功（Dataset ID: {dataset_id[:20]}...）', 'success')
+    flash(f'知识库「{kb_name}」创建成功（RAG-Server）', 'success')
     return redirect(url_for('admin.kbs'))
 
 
@@ -721,13 +537,18 @@ def delete_kb_document(kb_id, doc_id):
     kb = get_kb_by_id(kb_id)
     if not kb:
         return jsonify({'error': '知识库不存在'}), 404
+    kb = dict(kb) if hasattr(kb, 'keys') else kb
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-    result = dify.delete_document(doc_id)
-    if 'error' in result:
-        return jsonify(result), 500
-    return jsonify({'success': True})
+    # RAG-Server KB
+    if kb.get('rag_dataset_id'):
+        from app.services.rag_kb_service import RAGServerKBService
+        svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+        result = svc.delete_document(doc_id)
+        if 'error' in result:
+            return jsonify(result), 500
+        return jsonify({'success': True})
+
+    return jsonify({'error': '知识库不存在'}), 404
 
 
 @bp.route('/admin/kbs/<int:kb_id>/upload', methods=['POST'])
@@ -738,6 +559,7 @@ def upload_kb_document(kb_id):
     kb = get_kb_by_id(kb_id)
     if not kb:
         return jsonify({'error': '知识库不存在'}), 404
+    kb = dict(kb) if hasattr(kb, 'keys') else kb
 
     if 'file' not in request.files:
         return jsonify({'error': '未找到上传文件'}), 400
@@ -747,21 +569,24 @@ def upload_kb_document(kb_id):
         return jsonify({'error': '文件名为空'}), 400
 
     import os, uuid
-    tmp_dir = '/tmp/loong-kb-uploads'
+    tmp_dir = '/tmp/loong-kb2-uploads'
     os.makedirs(tmp_dir, exist_ok=True)
     suffix = os.path.splitext(file.filename)[1]
     tmp_path = os.path.join(tmp_dir, f'{uuid.uuid4().hex}{suffix}')
     file.save(tmp_path)
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-    result = dify.upload_document(tmp_path, filename=file.filename)
-
-    # 清理临时文件
     try:
-        os.remove(tmp_path)
-    except Exception:
-        pass
+        if kb.get('rag_dataset_id'):
+            from app.services.rag_kb_service import RAGServerKBService
+            svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+            result = svc.upload_document(tmp_path, filename=file.filename)
+        else:
+            return jsonify({'error': '非 RAG 知识库或知识库不存在'}), 400
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
     if 'error' in result:
         return jsonify(result), 500
@@ -777,7 +602,10 @@ def get_kb_documents(kb_id):
         return jsonify({'error': '请先登录'}), 401
 
     kb = get_kb_by_id(kb_id)
-    if not kb or not kb['dify_dataset_id']:
+    if not kb:
+        return jsonify({'error': '知识库不存在'}), 404
+    kb = dict(kb) if hasattr(kb, 'keys') else kb
+    if not kb.get('rag_dataset_id'):
         return jsonify({'documents': [], 'total': 0})
 
     # 权限检查：需要 can_access 或更高权限
@@ -796,12 +624,13 @@ def get_kb_documents(kb_id):
         if not perm.get('can_access'):
             return jsonify({'error': '无权限访问该知识库', 'code': 'forbidden'}), 403
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-    result = dify.list_documents()
+    # RAG-Server KB
+    from app.services.rag_kb_service import RAGServerKBService
+    svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+    result = svc.list_documents()
     if 'error' in result:
         import logging
-        logging.getLogger(__name__).error(f"[Admin] list_documents error: {result['error']}")
+        logging.getLogger(__name__).error(f"[Admin] RAG list_documents error: {result['error']}")
     return jsonify(result)
 
 
@@ -863,40 +692,42 @@ def update_permissions():
 @bp.route('/admin/kbs/models/<model_type>')
 @admin_required
 def get_model_list(model_type):
-    """返回 Dify 可用的 embedding/rerank 模型列表 JSON"""
+    """返回 embedding/rerank 模型列表（RAG-Server 模式，无 Dify）"""
     if model_type not in ('text-embedding', 'rerank'):
         return jsonify({'error': 'invalid model type'}), 400
 
-    from app.services.dify import get_available_models
-    result = get_available_models(model_type)
-    if 'error' in result:
-        return jsonify({'error': result['error']}), 500
+    from app.config import get_embedding_config, get_reranker_config
+    emb_cfg = get_embedding_config()
+    rer_cfg = get_reranker_config()
 
-    # 从已有知识库获取 embedding 和 rerank 默认值（Dify 知识库）
-    default_model = None
-    default_rerank = None
-    try:
-        datasets_resp = requests.get(
-            'http://10.40.65.209/v1/datasets?page=1&limit=3',
-            headers={'Authorization': 'Bearer dataset-BO8tHRQFbzGXoTPHwug2m8Tv'},
-            timeout=10,
-        )
-        if datasets_resp.status_code == 200:
-            for ds in datasets_resp.json().get('data', []):
-                if ds.get('embedding_model'):
-                    default_model = ds['embedding_model']
-                rm = ds.get('retrieval_model_dict', {}).get('reranking_model', {})
-                if rm.get('reranking_model_name'):
-                    default_rerank = rm['reranking_model_name']
-                break
-    except Exception:
-        pass
+    if model_type == 'text-embedding':
+        # 优先从 RAG-Server config 读取，fallback 到 embedding config
+        from app.config import get_rag_server_config
+        rag_cfg = get_rag_server_config()
+        if rag_cfg.get('enabled'):
+            # RAG-Server 使用固定的 embedding 模型
+            models = []
+            if emb_cfg.get('provider') == 'siliconflow':
+                models.append({'model_name': emb_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-m3'), 'provider': 'siliconflow'})
+            elif emb_cfg.get('provider') == 'ollama':
+                models.append({'model_name': emb_cfg.get('ollama', {}).get('model', 'bge-m3:latest'), 'provider': 'ollama'})
+            default_model = models[0]['model_name'] if models else None
+            return jsonify({'models': models, 'default_model': default_model, 'default_rerank': None})
 
-    return jsonify({
-        'models': result['models'],
-        'default_model': default_model,
-        'default_rerank': default_rerank,
-    })
+        # 无 RAG-Server 时返回空
+        return jsonify({'models': [], 'default_model': None, 'default_rerank': None})
+
+    else:  # rerank
+        from app.config import get_rag_server_config
+        rag_cfg = get_rag_server_config()
+        if rag_cfg.get('enabled'):
+            models = []
+            if rer_cfg.get('provider') == 'siliconflow':
+                models.append({'model_name': rer_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3'), 'provider': 'siliconflow'})
+            default_rerank = models[0]['model_name'] if models else None
+            return jsonify({'models': models, 'default_model': None, 'default_rerank': default_rerank})
+
+        return jsonify({'models': [], 'default_model': None, 'default_rerank': None})
 
 
 # ==================== Local QA KB Management ====================
@@ -1056,95 +887,6 @@ def qa_index_status(kb_id):
     return jsonify({'indexed': indexed})
 
 
-# ==================== KB Model Config (Dify only) ====================
-
-@bp.route('/admin/kbs/<int:kb_id>/models', methods=['GET'])
-def get_kb_model_config(kb_id):
-    """返回当前 KB 的 embedding/reranking 模型配置 + Dify 可选模型列表"""
-    from app.models import get_kb_by_id
-    _kb = get_kb_by_id(kb_id)
-    if not _kb:
-        return jsonify({'error': '知识库不存在'}), 404
-    kb = dict(_kb)  # sqlite3.Row 没有 .get()，转成 dict
-    if kb.get('template_type') == 'qa':
-        return jsonify({'error': '问答知识库不支持此功能'}), 400
-
-    dataset_id = kb.get('dify_dataset_id')
-    if not dataset_id:
-        return jsonify({'error': '非 Dify 知识库'}), 400
-
-    # 获取 Dify dataset 当前配置
-    from app.services.dify import DifyKBService
-    try:
-        dify = DifyKBService(dataset_id=dataset_id)
-        info = dify.get_dataset_info()
-    except Exception as e:
-        return jsonify({'error': f'连接 Dify 失败: {e}'}), 500
-
-    current_embedding = info.get('embedding_model', '')
-    retrieval_dict = info.get('retrieval_model_dict', {})
-    current_reranking = retrieval_dict.get('reranking_model', {}).get('reranking_model_name', '')
-    reranking_provider = retrieval_dict.get('reranking_model', {}).get('reranking_provider_name', '')
-    # embedding 没有顶层 provider，从 weights 里取
-    emb_provider = retrieval_dict.get('weights', {}).get('vector_setting', {}).get('embedding_provider_name', '')
-
-    # 获取 Dify 可用模型列表
-    from app.services.dify import get_available_models
-    emb_result = get_available_models('text-embedding')
-    rerank_result = get_available_models('rerank')
-
-    return jsonify({
-        'current_embedding': current_embedding,
-        'current_embedding_provider': emb_provider,
-        'current_reranking': current_reranking,
-        'current_reranking_provider': reranking_provider,
-        'embedding_models': emb_result.get('models', []),
-        'reranking_models': rerank_result.get('models', []),
-    })
-
-
-@bp.route('/admin/kbs/<int:kb_id>/models', methods=['POST'])
-@kb_edit_required
-def update_kb_model_config(kb_id):
-    """更新 KB 的 embedding / reranking 模型（仅 Dify 知识库）"""
-    from app.models import get_kb_by_id
-    _kb = get_kb_by_id(kb_id)
-    if not _kb:
-        return jsonify({'error': '知识库不存在'}), 404
-    kb = dict(_kb)  # sqlite3.Row 没有 .get()，转成 dict
-    if kb.get('template_type') == 'qa':
-        return jsonify({'error': '问答知识库不支持此功能'}), 400
-
-    dataset_id = kb.get('dify_dataset_id')
-    if not dataset_id:
-        return jsonify({'error': '非 Dify 知识库'}), 400
-
-    data = request.get_json() or {}
-    embedding_model = data.get('embedding_model', '').strip()
-    reranking_model = data.get('reranking_model', '').strip()
-
-    def parse_model_str(s):
-        """解析 \"provider/model\" 格式，返回 (model, provider)"""
-        if not s:
-            return None
-        parts = s.split('/')
-        if len(parts) < 2:
-            return (s, 'langgenius/siliconflow/siliconflow')
-        return (parts[-1], '/'.join(parts[:-1]))
-
-    emb_cfg = parse_model_str(embedding_model) if embedding_model else None
-    rer_cfg = parse_model_str(reranking_model) if reranking_model else None
-
-    from app.services.dify import patch_dataset
-    patch_result = patch_dataset(
-        dataset_id,
-        embedding_model=emb_cfg[0] if emb_cfg else None,
-        reranking_model=rer_cfg[0] if rer_cfg else None,
-    )
-    if 'error' in patch_result:
-        return jsonify({'error': patch_result['error']}), 500
-    return jsonify({'ok': True})
-
 
 @bp.route('/admin/kbs/<int:kb_id>/qa/rebuild-index', methods=['POST'])
 @kb_edit_required
@@ -1188,28 +930,27 @@ def download_single_document(kb_id, doc_id):
     else:
         filename = None
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-    content, _ = dify.download_document(doc_id, filename=filename)
-    if isinstance(content, dict) and content.get('error'):
-        return content['error'], 500
+    # RAG-Server KB
+    if kb.get('rag_dataset_id'):
+        from app.services.rag_kb_service import RAGServerKBService
+        svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+        content, suggested = svc.download_document(doc_id, filename=filename)
+        if isinstance(content, dict) and content.get('error'):
+            return content['error'], 500
+        import urllib.parse
+        final_name = filename or suggested or 'document'
+        encoded = urllib.parse.quote(final_name, safe='')
+        from flask import Response
+        return Response(
+            content,
+            mimetype='application/octet-stream',
+            headers={
+                'Content-Disposition': f"attachment; filename={encoded}; filename*=UTF-8''{encoded}",
+                'Content-Length': str(len(content)),
+            },
+        )
 
-    # 用确定的文件名（优先用传入的，否则用 Dify 返回的）
-    import urllib.parse
-    final_name = filename or 'document'
-    # RFC 5987: filename*=UTF-8''<percent-encoded>
-    encoded = urllib.parse.quote(final_name, safe='')
-    # 同时设置 ASCII-safe 的 filename（对不支持 RFC 5987 的旧浏览器兼容）
-    from flask import Response
-    resp = Response(
-        content,
-        mimetype='application/octet-stream',
-        headers={
-            'Content-Disposition': f"attachment; filename={encoded}; filename*=UTF-8''{encoded}",
-            'Content-Length': str(len(content)),
-        },
-    )
-    return resp
+    return '知识库不存在', 404
 
 
 @bp.route('/admin/kbs/<int:kb_id>/documents/download-all', methods=['POST'])
@@ -1217,7 +958,7 @@ def download_single_document(kb_id, doc_id):
 def download_all_documents(kb_id):
     """
     打包下载知识库所有文档（ZIP）。
-    如果文档数 <= 100，直接调 Dify download-zip 接口；
+    如果文档数 <= 100，直接调 Dify/RAG download-zip 接口；
     如果 > 100，分批调用后本地合并为单个 ZIP。
     """
     from app.models import get_kb_by_id, is_local_qa_kb
@@ -1228,70 +969,32 @@ def download_all_documents(kb_id):
     if is_local_qa_kb(kb_id):
         return jsonify({'error': '问答知识库请使用「导出问答对」功能'}), 400
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-
-    # 先获取所有文档 ID
-    doc_list_result = dify.list_documents()
-    if 'error' in doc_list_result:
-        return jsonify({'error': doc_list_result['error']}), 500
-    docs = doc_list_result.get('documents', [])
-    if not docs:
-        return jsonify({'error': '知识库中没有文档'}), 400
-
-    doc_ids = [d['id'] for d in docs]
-    kb_name = kb.get('kb_name', 'knowledge_base')
-
-    import zipfile, io, os
-
-    # Dify download-zip 每次最多 100 条
-    BATCH = 100
-    all_zips = []
-
-    for i in range(0, len(doc_ids), BATCH):
-        batch = doc_ids[i:i + BATCH]
-        zip_bytes, _ = dify.download_documents_zip(batch, kb_name)
+    # RAG-Server KB
+    if kb.get('rag_dataset_id'):
+        from app.services.rag_kb_service import RAGServerKBService
+        svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+        doc_list = svc.list_documents()
+        if 'error' in doc_list:
+            return jsonify({'error': doc_list['error']}), 500
+        docs = doc_list.get('documents', [])
+        if not docs:
+            return jsonify({'error': '知识库中没有文档'}), 400
+        doc_ids = [d['id'] for d in docs]
+        kb_name = kb.get('kb_name', 'knowledge_base')
+        zip_bytes, zip_name = svc.download_documents_zip(doc_ids, kb_name)
         if isinstance(zip_bytes, dict) and zip_bytes.get('error'):
-            return jsonify({'error': f'第 {i//BATCH+1} 批下载失败: {zip_bytes["error"]}'}), 500
-        all_zips.append(zip_bytes)
-
-    # 如果只有一批，直接返回 Dify 的 ZIP
-    if len(all_zips) == 1:
-        zip_bytes = all_zips[0]
+            return jsonify({'error': zip_bytes['error']}), 500
         from flask import Response
         return Response(
             zip_bytes,
             mimetype='application/zip',
             headers={
-                'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_documents.zip",
+                'Content-Disposition': f"attachment; filename*=UTF-8''{zip_name}",
                 'Content-Length': str(len(zip_bytes)),
             },
         )
 
-    # 多批：本地解压再重新打包为单一 ZIP
-    try:
-        master_zip = io.BytesIO()
-        with zipfile.ZipFile(master_zip, 'w', zipfile.ZIP_DEFLATED) as mz:
-            for batch_idx, zbytes in enumerate(all_zips):
-                zf = zipfile.ZipFile(io.BytesIO(zbytes))
-                for item in zf.infolist():
-                    new_name = f"batch{batch_idx+1}/{item.filename}"
-                    mz.writestr(new_name, zf.read(item.filename))
-                zf.close()
-        master_zip.seek(0)
-        from flask import Response
-        return Response(
-            master_zip.getvalue(),
-            mimetype='application/zip',
-            headers={
-                'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_all_documents.zip",
-                'Content-Length': str(master_zip.getbuffer().nbytes),
-            },
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Merge ZIP failed: {e}")
-        return jsonify({'error': f'合并 ZIP 失败: {e}'}), 500
+    return '知识库不存在', 404
 
 
 # ==================== Download All KBs ====================
@@ -1324,31 +1027,27 @@ def download_all_kbs_zip():
                 for it in items:
                     writer.writerow([it.get('question', ''), it.get('answer', '')])
                 mz.writestr(f'{folder}/qa_export.csv', buf.getvalue().encode('utf-8'))
-            else:
-                # 文档知识库：通过 Dify API 下载
-                from app.services.dify import build_dify_service
-                dify = build_dify_service(dict(kb))
-                doc_result = dify.list_documents()
+            elif kb.get('rag_dataset_id'):
+                # 文档知识库：通过 RAG-Server 下载
+                from app.services.rag_kb_service import RAGServerKBService
+                svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb_name)
+                doc_result = svc.list_documents()
                 if 'error' in doc_result:
                     continue
                 docs = doc_result.get('documents', [])
                 if not docs:
                     continue
                 doc_ids = [d['id'] for d in docs]
-
                 BATCH = 100
                 for i in range(0, len(doc_ids), BATCH):
                     batch = doc_ids[i:i + BATCH]
-                    zip_bytes, _ = dify.download_documents_zip(batch, kb_name)
+                    zip_bytes, _ = svc.download_documents_zip(batch, kb_name)
                     if isinstance(zip_bytes, dict) and zip_bytes.get('error'):
                         continue
-                    # 解压 Dify 返回的 ZIP，提取文件放入对应文件夹
                     try:
                         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
                         for item in zf.infolist():
-                            # 文件名保持原样（Dify ZIP 里已含知识库名）
                             data = zf.read(item.filename)
-                            # 放到统一的 {kb_name}/ 下，去掉 Dify 返回的内层目录前缀
                             fname = item.filename.split('/')[-1] if '/' in item.filename else item.filename
                             if fname:
                                 mz.writestr(f'{folder}/{fname}', data)

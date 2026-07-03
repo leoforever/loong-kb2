@@ -49,7 +49,6 @@ def _rerank_chunks(query, chunks):
     provider = cfg.get('provider')
     threshold = cfg.get('score_threshold', 0.3)
     base_url = cfg.get('base_url', '').rstrip('/')
-    # 兼容 base_url 已含 /v1 和不含 /v1 两种写法
     if base_url.endswith('/v1'):
         rerank_url = f'{base_url}/rerank'
     else:
@@ -60,12 +59,17 @@ def _rerank_chunks(query, chunks):
     model = provider_cfg.get('model')
 
     if not api_key or not model:
-        logger.warning("[QA] reranker enabled but api_key or model missing")
+        logger.warning("[QA] rerank enabled but api_key or model missing")
         return chunks
 
     try:
         import requests
         documents = [c.get('content', '') for c in chunks]
+
+        logger.info(f"[QA] rerank | === 原始 top_chunks（RAG score 排序）===")
+        for i, c in enumerate(chunks):
+            logger.info(f"[QA] rerank |   [{i}] score={c.get('score',0):.4f}  {c.get('kb_name','')}/{c.get('doc_name','')}")
+
         resp = requests.post(
             rerank_url,
             headers={
@@ -84,9 +88,9 @@ def _rerank_chunks(query, chunks):
             return chunks
 
         results = resp.json().get('results', [])
-        # 建立 index → rerank_score 映射
         score_map = {r['index']: r['relevance_score'] for r in results}
 
+        logger.info(f"[QA] rerank | === Reranker 筛选结果（threshold={threshold}）===")
         reranked = []
         for i, c in enumerate(chunks):
             score = score_map.get(i, 0.0)
@@ -94,12 +98,12 @@ def _rerank_chunks(query, chunks):
             c['rerank_score'] = score
             if score >= threshold:
                 reranked.append(c)
-                logger.info(f"[QA] rerank | keep idx={i} score={score:.4f} doc={c.get('doc_name', '')}")
+                logger.info(f"[QA] rerank |   [KEEP  ] idx={i} rerank={score:.4f}  {c.get('kb_name','')}/{c.get('doc_name','')}")
             else:
-                logger.info(f"[QA] rerank | drop idx={i} score={score:.4f} doc={c.get('doc_name', '')}")
+                logger.info(f"[QA] rerank |   [DROP  ] idx={i} rerank={score:.4f}  {c.get('kb_name','')}/{c.get('doc_name','')}")
 
-        # 按 rerank_score 降序重排
         reranked.sort(key=lambda x: x.get('rerank_score', 0), reverse=True)
+        logger.info(f"[QA] rerank | 最终保留 {len(reranked)}/{len(chunks)} chunks")
         return reranked
 
     except Exception as e:
@@ -236,12 +240,10 @@ def ask():
         logger.warn(f"[QA] ask | no accessible KBs for user_id={user_id}")
         return jsonify({'answer': '当前角色暂无可访问的知识库。', 'sources': []})
 
-    from app.services.dify import build_dify_service
-
     all_chunks = []
     all_sources = []
 
-    # 1. 先检索本地问答知识库（返回 "问题→答案" 作为 chunk）
+    # 1. 检索本地问答知识库
     for kb in accessible_kbs:
         if kb.get('template_type') == 'qa':
             try:
@@ -261,26 +263,26 @@ def ask():
             except Exception as e:
                 logger.error(f"[QA] ask | KB={kb['kb_name']} (QA) exception: {e}")
 
-    # 2. 再检索 Dify 知识库
+    # 2. 检索 RAG 知识库
     for kb in accessible_kbs:
-        if kb.get('template_type') != 'qa':
+        if kb.get('rag_dataset_id'):
             try:
-                logger.info(f"[QA] ask | retrieving from KB={kb['kb_name']} (id={kb['kb_id']})")
-                dify = build_dify_service(kb)
-                result = dify.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+                from app.services.rag_kb_service import RAGServerKBService
+                svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb['kb_name'])
+                result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
                 if 'error' not in result:
                     for chunk in result.get('results', []):
-                        chunk['kb_name'] = kb['kb_name'] if hasattr(kb, '__getitem__') else kb.get('kb_name')
-                        chunk['kb_id'] = kb['kb_id'] if hasattr(kb, '__getitem__') else kb.get('kb_id')
+                        chunk['kb_name'] = kb['kb_name']
+                        chunk['kb_id'] = kb['kb_id']
                         chunk['is_qa'] = False
                     all_chunks.extend(result.get('results', []))
                     if result.get('results'):
-                        all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'dify'})
-                    logger.info(f"[QA] ask | KB={kb['kb_name']} got {len(result.get('results',[]))} chunks")
+                        all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'rag'})
+                    logger.info(f"[QA] ask | KB={kb['kb_name']} (RAG) got {len(result.get('results',[]))} chunks")
                 else:
                     logger.error(f"[QA] ask | KB={kb['kb_name']} retrieve error: {result['error']}")
             except Exception as e:
-                logger.error(f"[QA] ask | KB={kb['kb_name']} exception: {e}")
+                logger.error(f"[QA] ask | KB={kb['kb_name']} (RAG) exception: {e}")
 
     if not all_chunks:
         logger.warn(f"[QA] ask | no chunks retrieved for query='{query[:80]}'")
@@ -366,12 +368,12 @@ def chat(kb_id):
         if not query:
             return jsonify({'error': '问题不能为空'}), 400
 
-        from app.services.dify import build_dify_service
+        from app.services.rag_kb_service import RAGServerKBService
         from app.services.llm import generate_answer
         from app.models import save_query_log
 
-        dify = build_dify_service(kb)
-        retrieve_result = dify.retrieve(query, top_k=5)
+        svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+        retrieve_result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
 
         if 'error' in retrieve_result:
             return jsonify({'error': retrieve_result['error']}), 500
@@ -434,10 +436,10 @@ def kb_documents(kb_id):
     if not perms.get(kb_id, {}).get('can_access'):
         return jsonify({'error': '无权限'}), 403
 
-    if not kb.get('dify_dataset_id'):
+    if not kb.get('rag_dataset_id'):
         return jsonify({'documents': [], 'total': 0})
 
-    from app.services.dify import build_dify_service
-    dify = build_dify_service(kb)
-    result = dify.list_documents()
+    from app.services.rag_kb_service import RAGServerKBService
+    svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+    result = svc.list_documents()
     return jsonify(result)

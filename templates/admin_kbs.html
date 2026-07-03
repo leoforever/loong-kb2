@@ -11,7 +11,8 @@
 .kb-doc-cell { display: table-cell; padding: 4px 8px; vertical-align: middle; font-size: 13px; }
 .kb-doc-cell.name { width: 17%; color: #333; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-doc-cell.desc { width: 30%; }
-.kb-doc-cell.dify { width: 17%; }
+.kb-doc-cell.rag { width: 17%; }
+.kb-doc-cell.qa { width: 12%; }
 .kb-doc-cell.status-cell { width: 10%; text-align: center; }
 .kb-doc-cell.actions { width: 26%; }
 .doc-item-row { display: table-row; }
@@ -45,13 +46,12 @@
         <div class="page-header">
             <div>
                 <h1 class="page-title">知识库配置</h1>
-                <p style="color:#888; margin-top:4px; font-size:14px;">管理 Dify 知识库和本地问答知识库</p>
+                <p style="color:#888; margin-top:4px; font-size:14px;">管理知识库和本地问答库</p>
             </div>
             {% if is_admin %}
             <button class="btn btn-primary" onclick="showCreateKB()">+ 添加知识库</button>
             {% endif %}
             {% if is_admin %}
-            <button class="btn btn-secondary" style="margin-left:8px;" onclick="syncKBs()">🔄 同步 Dify</button>
             <button class="btn btn-secondary" style="margin-left:8px;" onclick="downloadAllKBsZip()">📥 打包下载全部知识库</button>
             {% endif %}
         </div>
@@ -90,7 +90,7 @@
             </td>
             <td>
                 {% if edit_kb_id == kb.kb_id %}
-                {% if kb.template_type != 'qa' and kb.dify_dataset_id %}
+                {% if kb.template_type != 'qa' %}
                 <div id="edit-model-section-{{ kb.kb_id }}" style="margin-top:6px; background:#f8f9fa; border:1px solid #e9ecef; border-radius:6px; padding:8px 10px;">
                     <div style="font-size:11px; color:#888; margin-bottom:6px;">嵌入/重排序模型</div>
                     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -107,6 +107,7 @@
                 <form method="post" action="/admin/kbs/{{ kb.kb_id }}" style="display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-top:4px; max-width:100%;">
                     <input name="kb_name" value="{{ kb.kb_name }}" required style="padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:13px; width:120px;">
                     <input name="description" value="{{ kb.description or '' }}" placeholder="描述" style="padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:13px; width:200px;">
+                    <input type="hidden" name="template_type" value="{{ kb.template_type }}">
                     <input type="hidden" name="embedding_model" id="edit-emb-val-{{ kb.kb_id }}">
                     <input type="hidden" name="reranking_model" id="edit-rerank-val-{{ kb.kb_id }}">
                     <button type="submit" class="btn btn-primary" style="padding:4px 12px; font-size:12px; flex-shrink:0;" onclick="document.getElementById('edit-emb-val-{{ kb.kb_id }}').value=document.getElementById('edit-emb-{{ kb.kb_id }}').value; document.getElementById('edit-rerank-val-{{ kb.kb_id }}').value=document.getElementById('edit-rerank-{{ kb.kb_id }}').value;">保存</button>
@@ -172,31 +173,31 @@
                     <input type="radio" name="template_id" value="text_plain" style="display:none;">
                     <div class="tmpl-inner">
                         <strong>通用分段</strong>
-                        <span>text_model · 自动分句</span>
-                        <small>适用于非结构化文档、FAQ、通用文本。简单分句，检索粒度均匀。</small>
+                        <span>普通切分 · 句级分块</span>
+                        <small>适用于非结构化文档、FAQ、通用文本。自动分句，检索粒度均匀，适合一般问答场景。</small>
                     </div>
                 </label>
                 <label class="tmpl-card" onclick="selectTmpl('hierarchical_full')">
                     <input type="radio" name="template_id" value="hierarchical_full" style="display:none;">
                     <div class="tmpl-inner">
                         <strong>父子分段-全文</strong>
-                        <span>hierarchical · parent_mode=full-doc</span>
-                        <small>适用于结构化文档（PDF/手册）。整篇文档为父chunk，子块512字，保留完整上下文。</small>
+                        <span>父子切分 · 父块=完整文档</span>
+                        <small>适用于结构化文档（PDF/手册）。整篇文档为父chunk，子块512字，保留完整上下文，适合精确引用。</small>
                     </div>
                 </label>
                 <label class="tmpl-card" onclick="selectTmpl('hierarchical_paragraph')" style="grid-column:1/-1;">
                     <input type="radio" name="template_id" value="hierarchical_paragraph" style="display:none;">
                     <div class="tmpl-inner">
                         <strong>父子分段-段落</strong>
-                        <span>hierarchical · parent_mode=paragraph · 子块128字</span>
-                        <small>适用于高度结构化文档（表格、多级标题）。每个段落为父chunk，最细粒度子块，适合精确匹配场景。</small>
+                        <span>父子切分 · 父块=段落 · 子块128字</span>
+                        <small>适用于高度结构化文档（表格、多级标题）。每个段落为父chunk，最细粒度子块，适合精确匹配。</small>
                     </div>
                 </label>
                 <label class="tmpl-card" onclick="selectTmpl('qa')" style="grid-column:1/-1;">
                     <input type="radio" name="template_id" value="qa" style="display:none;">
                     <div class="tmpl-inner">
                         <strong>问答知识库</strong>
-                        <span>local · 无需 Dify · CSV 导入 · {{ embedding_config.siliconflow.model if embedding_config.provider == 'siliconflow' else embedding_config.ollama.model if embedding_config.provider == 'ollama' else '默认嵌入模型' }}</span>
+                        <span>本地向量库 · CSV 导入问答对</span>
                         <small>适合 FAQ、产品手册等固定问答场景。导入格式：CSV 两列（问题,答案），首行可为表头，UTF-8 编码。</small>
                     </div>
                 </label>
@@ -222,7 +223,7 @@
                         <div id="reranking-model-loading" style="font-size:11px; color:#999; margin-top:2px;"></div>
                     </div>
                 </div>
-                <div style="font-size:11px; color:#aaa; margin-top:6px;">留空则使用模板默认值。模型列表从 Dify API 实时获取。</div>
+                <div style="font-size:11px; color:#aaa; margin-top:6px;">留空则使用 RAG-Server 默认配置。</div>
             </div>
 
             <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
@@ -513,16 +514,11 @@ function hideLoading() {
     const el = document.getElementById('loading-overlay');
     if (el) el.remove();
 }
-function syncKBs() {
-    if (!confirm('将从 Dify API 同步知识库列表，是否继续？')) return;
-    showLoading('正在同步知识库...');
-    fetch('/admin/kbs/sync', {method:'POST'}).then(r => location.reload());
-}
 function selectTmpl(id) {
     document.querySelectorAll('.tmpl-card').forEach(c => c.classList.remove('selected'));
     document.querySelector(`input[value="${id}"]`).checked = true;
     document.querySelector(`input[value="${id}"]`).closest('.tmpl-card').classList.add('selected');
-    // 问答库不需要 Dify 模型配置，隐藏模型选择区
+    // 问答库隐藏模型配置区
     var modelSection = document.getElementById('model-config-section');
     if (modelSection) {
         modelSection.style.display = (id === 'qa') ? 'none' : 'block';
@@ -583,7 +579,7 @@ function loadModelLists() {
         });
 }
 function deleteKB(kbId, kbName) {
-    if (!confirm(`确认删除知识库「${kbName}」？\n\n删除后，Dify 上的知识库和所有文档也将同步删除。`)) return;
+    if (!confirm(`确认删除知识库「${kbName}」？`)) return;
     showLoading('正在删除知识库...');
     fetch(`/admin/kbs/${kbId}/delete`, {method:'POST'}).then(r => location.reload());
 }
@@ -592,11 +588,12 @@ document.getElementById('createKBModal').addEventListener('click', function(e) {
 
 var _docCache = {};
 var _abortControllers = {};
-async function toggleDocs(kbId) {
+async function toggleDocs(kbId, forceState) {
     const row = document.getElementById('doc-row-' + kbId);
     const isOpen = row.classList.contains('open');
+    const shouldOpen = forceState !== undefined ? forceState : !isOpen;
 
-    if (isOpen) {
+    if (!shouldOpen) {
         // 关闭
         row.classList.remove('open');
         var allRows = row.parentNode.children;
@@ -608,7 +605,6 @@ async function toggleDocs(kbId) {
         }
         var uploadRow = document.getElementById('upload-row-' + kbId);
         if (uploadRow) uploadRow.classList.remove('open');
-        // abort 正在进行的 fetch，防止旧请求返回后重新打开 UI
         if (_abortControllers[kbId]) {
             _abortControllers[kbId].abort();
             delete _abortControllers[kbId];
@@ -616,6 +612,7 @@ async function toggleDocs(kbId) {
         return;
     }
 
+    // 以下是 shouldOpen=true 时的展开逻辑
     // 展开前先清干净可能残留的旧 doc-file-row
     var allRowsBefore = row.parentNode.children;
     for (var i = 0; i < allRowsBefore.length; i++) {
@@ -726,7 +723,7 @@ function renderDocs(kbId, docs, statusLabel, statusClass) {
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#333;font-size:14px;" title="${escHtml(doc.name)}">${escHtml(doc.name)}</td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
-            <td style="padding:3px 8px;border-bottom:1px solid #eee;"><span class="doc-status ${statusClass[doc.display_status] || ''}">${statusLabel[doc.display_status] || doc.display_status || '未知'}</span></td>
+            <td style="padding:3px 8px;border-bottom:1px solid #eee;"><span class="doc-status ${statusClass[doc.indexing_status] || ''}">${statusLabel[doc.indexing_status] || doc.indexing_status || '未知'}</span></td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;text-align:left;color:#999;font-size:12px;">${doc.word_count ? doc.word_count.toLocaleString() + ' 字' : ''}</td>
             <td style="padding:3px 4px;border-bottom:1px solid #eee;" class="actions-cell">
@@ -788,14 +785,55 @@ async function uploadDoc(kbId) {
         } else {
             fileInput.value = '';
             errSpan.style.color = '#1e7e34';
-            errSpan.textContent = '上传成功，等待处理…';
-            setTimeout(() => {
-                errSpan.textContent = '';
-                errSpan.style.color = '';
-                _docCache[kbId] && (_docCache[kbId].loaded = false);
-                toggleDocs(kbId);
-                toggleDocs(kbId);
-            }, 2000);
+            errSpan.textContent = '上传成功，正在处理…';
+            // RAG-Server 处理需要几秒，直接轮询 API 获取最新状态
+            // 关键：不调用 toggleDocs/loadDoc，避免触发 renderDocs 重建 DOM
+            // 只在所有文档完成后才刷新一次列表
+            let pollCount = 0;
+            const pollInterval = setInterval(async () => {
+                try {
+                    const resp = await fetch(`/admin/kbs/${kbId}/documents`);
+                    const data = await resp.json();
+                    const docs = data.documents || [];
+                    const statusLabel = {'completed':'已完成','processing':'处理中','failed':'失败','pending':'等待中'};
+                    const statusClass = {'completed':'status-ok','processing':'status-warn','failed':'status-err','pending':''};
+
+                    // 标记缓存为脏，下次用户手动点开会刷新完整列表
+                    _docCache[kbId] = null;
+
+                    // 更新现有 .doc-file-row 的状态（原地更新，不重建 DOM）
+                    const row = document.getElementById('doc-row-' + kbId);
+                    if (row) {
+                        const existingRows = row.parentNode.querySelectorAll('.doc-file-row');
+                        existingRows.forEach((docRow, idx) => {
+                            if (idx < docs.length) {
+                                const doc = docs[idx];
+                                const statusSpan = docRow.querySelector('.doc-status');
+                                if (statusSpan) {
+                                    statusSpan.className = 'doc-status ' + (statusClass[doc.indexing_status] || '');
+                                    statusSpan.textContent = statusLabel[doc.indexing_status] || doc.indexing_status || '未知';
+                                }
+                                const metaCell = docRow.querySelector('td:nth-child(6)');
+                                if (metaCell) metaCell.textContent = doc.word_count ? doc.word_count.toLocaleString() + ' 字' : '';
+                            }
+                        });
+                    }
+
+                    // 所有文档都完成了，才刷新一次完整列表
+                    const allDone = docs.length > 0 && docs.every(d => d.indexing_status === 'completed');
+                    if (allDone || pollCount >= 8) {
+                        clearInterval(pollInterval);
+                        errSpan.textContent = '';
+                        errSpan.style.color = '';
+                        if (allDone) {
+                            // 强制刷新一次完整列表，确保新文档也显示出来
+                            toggleDocs(kbId, false); // 先关闭
+                            setTimeout(() => toggleDocs(kbId, true), 100); // 再打开，会走 loadDoc
+                        }
+                    }
+                } catch (e) { /* ignore network errors during polling */ }
+                pollCount++;
+            }, 2500);
         }
     } catch (e) {
         errSpan.textContent = '上传失败: ' + e.message;
@@ -814,8 +852,7 @@ async function deleteDoc(kbId, docId) {
             alert('删除失败: ' + data.error);
         } else {
             _docCache[kbId] && (_docCache[kbId].loaded = false);
-            toggleDocs(kbId);
-            toggleDocs(kbId);
+            toggleDocs(kbId, false);
         }
     } catch (e) {
         alert('删除失败: ' + e.message);

@@ -82,7 +82,7 @@
                 {% else %}
                 <div class="empty-state">
                     <div class="icon">💬</div>
-                    <p style="font-size:15px;">基于 Dify 知识检索 + MiniMax LLM 智能回答</p>
+                    <p style="font-size:15px;">基于 RAG 知识检索 + MiniMax LLM 智能回答</p>
                     <p style="font-size:13px; margin-top:6px; color:#bbb;">问题将同时在所有可访问知识库中检索</p>
                 </div>
                 {% endif %}
@@ -270,7 +270,7 @@ async function sendQuery() {
 
 function newChat() {
     sessionId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
-    document.getElementById('messages').innerHTML = '<div class="empty-state"><div class="icon">💬</div><p style="font-size:15px;">基于 Dify 知识检索 + MiniMax LLM 智能回答</p><p style="font-size:13px; margin-top:6px; color:#bbb;">问题将同时在所有可访问知识库中检索</p></div>';
+    document.getElementById('messages').innerHTML = '<div class="empty-state"><div class="icon">💬</div><p style="font-size:15px;">基于 RAG 知识检索 + MiniMax LLM 智能回答</p><p style="font-size:13px; margin-top:6px; color:#bbb;">问题将同时在所有可访问知识库中检索</p></div>';
     fetch('/qa/ask', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},

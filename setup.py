@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-初始化脚本：创建 admin 用户、Dify 知识库配置、分配权限
+初始化脚本：创建 admin 用户、默认角色、分配权限
 
 所有配置从 config.yaml 读取，不再硬编码 IP/端口。
 """
@@ -34,15 +34,10 @@ else:
 
 ACCESS_URL = f"http://{_display_ip}:{_server_port}"
 
-# Dify 默认配置（来自 config.yaml）
-dify_cfg = cfg.get('dify', {})
-DIFY_API_URL = dify_cfg.get('api_url', 'http://localhost/v1').rstrip('/').replace('/v1', '')
-DIFY_API_KEY = dify_cfg.get('api_key', '')
-
 
 def setup():
-    from app.models import init_db, create_user, create_kb, assign_role_to_user, set_kb_role_permission
-    from app.models import get_role_by_name, get_kb_by_id, get_db_conn
+    from app.models import init_db, create_user, assign_role_to_user
+    from app.models import get_role_by_name, get_db_conn
 
     init_db()
     print("✓ 数据库初始化完成")
@@ -101,33 +96,12 @@ def setup():
         developer_role = get_role_by_name('developer')
         print(f"✓ 创建 developer 角色")
 
-    # Add Dify KB config — 使用 config.yaml 中的默认值
-    try:
-        kb_id = create_kb(
-            name='龙芯产品手册',
-            description='龙芯 2K3000 处理器用户手册 V0.9 试用版',
-            dify_api_url=DIFY_API_URL,
-            dify_api_key=DIFY_API_KEY,
-            dify_dataset_id='',
-        )
-        print(f"✓ 创建知识库: 龙芯产品手册 (id={kb_id})")
-    except Exception as e:
-        print(f"  知识库已存在，跳过: {e}")
-        from app.models import get_all_kbs
-        kbs = get_all_kbs()
-        kb_id = kbs[0]['kb_id'] if kbs else None
-
-    if kb_id:
-        set_kb_role_permission(admin_role['role_id'], kb_id, can_access=1, can_edit=1, can_manage=1)
-        set_kb_role_permission(viewer_role['role_id'], kb_id, can_access=1, can_edit=1, can_manage=1)
-        print(f"✓ 权限配置完成: admin(viewer) -> 龙芯产品手册")
+    print(f"✓ 角色初始化完成")
 
     print("\n✅ 初始化完成!")
     print("=" * 40)
     print(f"  管理员账号: admin / admin123")
     print(f"  访问地址: {ACCESS_URL}")
-    print(f"  知识库: 龙芯产品手册 (对接 Dify API)")
-    print(f"  Dify API: {DIFY_API_URL}")
 
 if __name__ == '__main__':
     setup()
