@@ -20,7 +20,7 @@ minimax:
 
 # Qwen LLM 配置（provider=qwen 时生效）
 qwen:
-  base_url: "http://YOUR_QWEN_SERVER:PORT"
+  base_url: "http://YOUR_QWEN_SERVER:PORT/qwen3_5"
   model: "Qwen3.5-27B-W8A8"
 
 # Dify 全局默认 API 配置（新建知识库时的默认值）
@@ -48,8 +48,20 @@ embedding:
 # provider: siliconflow | None（不启用则跳过 reranker，直接用 Dify 原排序）
 reranker:
   provider: "siliconflow"
-  score_threshold: 0.9   # rerank score 低于此值的 chunk 丢弃（调高则保留更多 chunk，降低压缩速度）
+  score_threshold: 0.3   # rerank score 低于此值的 chunk 丢弃（调高则保留更多 chunk）
   siliconflow:
     api_key: "YOUR_SILICONFLOW_API_KEY"
     model: "BAAI/bge-reranker-v2-m3"
     base_url: "https://api.siliconflow.cn"   # 末尾不带 /v1，程序自动拼接
+
+# RAG-Server 配置（local_mode=true 时 RAG 逻辑嵌入 loong-kb2 进程）
+rag_server:
+  enabled: true
+  local_mode: true
+
+# 微信 Bot（内嵌 iLink 协议）
+# enabled: false 则不启动微信连接
+wx_bot:
+  enabled: false
+  ilink_token: ""   # 从 multi_channel_ai/weixin_token.json 读取填入，或留空用扫码绑定
+  ilink_base_url: "https://ilinkai.weixin.qq.com"
