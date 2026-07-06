@@ -2,5 +2,7 @@ bcrypt
 pyyaml
 gunicorn
 requests
+aiohttp
 numpy
 faiss-cpu
+cryptography

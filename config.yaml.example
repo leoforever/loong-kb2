@@ -48,7 +48,7 @@ embedding:
 # provider: siliconflow | None（不启用则跳过 reranker，直接用 Dify 原排序）
 reranker:
   provider: "siliconflow"
-  score_threshold: 0.3   # rerank score 低于此值的 chunk 丢弃
+  score_threshold: 0.9   # rerank score 低于此值的 chunk 丢弃（调高则保留更多 chunk，降低压缩速度）
   siliconflow:
     api_key: "YOUR_SILICONFLOW_API_KEY"
     model: "BAAI/bge-reranker-v2-m3"
