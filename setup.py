@@ -9,7 +9,7 @@ import sys
 import os
 from pathlib import Path
 
-sys.path.insert(0, '/root/.openclaw/workspace/loong-kb')
+sys.path.insert(0, str(Path(__file__).parent))
 
 # 读取 config.yaml
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
