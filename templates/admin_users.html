@@ -33,6 +33,8 @@
                 <td>
                     <button class="btn btn-outline" style="padding:4px 12px; font-size:12px;"
                         onclick="editRoles('{{ user.username }}', '{{ user.roles or '' }}')">分配角色</button>
+                    <button class="btn btn-outline" style="padding:4px 12px; font-size:12px;"
+                        onclick="location.href='/admin/users/{{ user.user_id }}/reset-password'">重置密码</button>
                     <button class="btn btn-danger" style="padding:4px 12px; font-size:12px;"
                         onclick="deleteUser({{ user.user_id }})">删除</button>
                 </td>

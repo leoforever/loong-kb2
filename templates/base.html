@@ -194,6 +194,21 @@
                 </svg></span>
                 <span class="text">问答</span>
             </a>
+            <a href="/bind/weixin" class="sidebar-link {% if request.path == '/bind/weixin' %}active{% endif %}">
+                <span class="icon"><svg width="20" height="20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+                    <defs>
+                        <linearGradient id="gw" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#07C160"/>
+                            <stop offset="100%" stop-color="#06AD56"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M20 12 C12 12 6 18 6 26 C6 38 18 50 32 56 C38 52 42 46 42 38 C42 32 38 26 32 26 C32 26 38 26 38 20 C38 14 32 12 28 12 Z" fill="url(#gw)"/>
+                    <circle cx="24" cy="22" r="3" fill="white"/>
+                    <circle cx="34" cy="22" r="3" fill="white"/>
+                    <path d="M22 32 Q28 38 34 32" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
+                </svg></span>
+                <span class="text">微信绑定</span>
+            </a>
             {% if is_admin %}
             <div class="page-sidebar-title" style="padding:12px 16px 4px; font-size:11px; color:#ccc;">管理后台</div>
             <a href="/admin/users" class="sidebar-link {% if '/admin/users' in request.path %}active{% endif %}">
@@ -244,6 +259,21 @@
                 </svg></span>
                 <span class="text">知识库管理</span>
             </a>
+            <a href="/admin/wechat-bindings" class="sidebar-link {% if '/admin/wechat-bindings' in request.path %}active{% endif %}">
+                <span class="icon"><svg width="20" height="20" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+                    <defs>
+                        <linearGradient id="gwa" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#07C160"/>
+                            <stop offset="100%" stop-color="#06AD56"/>
+                        </linearGradient>
+                    </defs>
+                    <path d="M20 12 C12 12 6 18 6 26 C6 38 18 50 32 56 C38 52 42 46 42 38 C42 32 38 26 32 26 C32 26 38 26 38 20 C38 14 32 12 28 12 Z" fill="url(#gwa)"/>
+                    <circle cx="24" cy="22" r="3" fill="white"/>
+                    <circle cx="34" cy="22" r="3" fill="white"/>
+                    <path d="M22 32 Q28 38 34 32" stroke="white" stroke-width="2" fill="none" stroke-linecap="round"/>
+                </svg></span>
+                <span class="text">微信管理</span>
+            </a>
             {% elif has_edit_permission %}
             <div class="page-sidebar-title" style="padding:12px 16px 4px; font-size:11px; color:#ccc;">文件管理</div>
             <a href="/admin/kbs" class="sidebar-link {% if '/admin/kbs' in request.path %}active{% endif %}">
@@ -267,6 +297,7 @@
         <div class="sidebar-user">
             {% if session.get('user_id') %}
                 <span class="username">{{ session.get('username') }}</span>
+                <a href="/change-password" style="color:#555; text-decoration:none; font-size:12px;" title="修改密码">改密码</a>
                 <a href="/logout" class="logout">退出</a>
             {% else %}
                 <a href="/login" style="color:#CC0000; text-decoration:none;">登录</a>

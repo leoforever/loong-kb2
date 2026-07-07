@@ -190,6 +190,42 @@ def delete_user(user_id):
     return redirect(url_for('admin.users'))
 
 
+@bp.route('/admin/users/<int:user_id>/reset-password', methods=['GET', 'POST'])
+@admin_required
+def reset_user_password(user_id):
+    """Admin 重置任意用户密码（GET 显示表单，POST 执行修改）"""
+    from app.models import get_user_by_id, update_user_password
+
+    user = get_user_by_id(user_id)
+    if not user:
+        flash('用户不存在', 'error')
+        return redirect(url_for('admin.users'))
+
+    if request.method == 'POST':
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+
+        if not new_password:
+            flash('请输入新密码', 'error')
+            return render_template('admin_reset_password.html', user=user)
+
+        if new_password != confirm_password:
+            flash('两次输入的密码不一致', 'error')
+            return render_template('admin_reset_password.html', user=user)
+
+        if len(new_password) < 6:
+            flash('密码至少6位', 'error')
+            return render_template('admin_reset_password.html', user=user)
+
+        new_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        update_user_password(user_id, new_hash)
+        logger.info(f"Admin reset password for user: {user['username']}")
+        flash(f'用户 {user["username"]} 的密码已重置', 'success')
+        return redirect(url_for('admin.users'))
+
+    return render_template('admin_reset_password.html', user=user)
+
+
 # ==================== Role Management ====================
 
 @bp.route('/admin/roles')
@@ -720,11 +756,17 @@ def get_model_list(model_type):
     else:  # rerank
         from app.config import get_rag_server_config
         rag_cfg = get_rag_server_config()
+        logger.info(f"[Model List] rerank | rag_enabled={rag_cfg.get('enabled')} base_url={rag_cfg.get('base_url')}")
+        rer_cfg = get_reranker_config()
+        logger.info(f"[Model List] rerank | rer_cfg={rer_cfg}")
         if rag_cfg.get('enabled'):
             models = []
             if rer_cfg.get('provider') == 'siliconflow':
-                models.append({'model_name': rer_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3'), 'provider': 'siliconflow'})
+                model_name = rer_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3')
+                models.append({'model_name': model_name, 'provider': 'siliconflow'})
+                logger.info(f"[Model List] rerank | added siliconflow model: {model_name}")
             default_rerank = models[0]['model_name'] if models else None
+            logger.info(f"[Model List] rerank | final models={models} default_rerank={default_rerank}")
             return jsonify({'models': models, 'default_model': None, 'default_rerank': default_rerank})
 
         return jsonify({'models': [], 'default_model': None, 'default_rerank': None})
@@ -1102,3 +1144,24 @@ def export_qa_csv(kb_id):
             'Content-Disposition': f"attachment; filename*=UTF-8''{kb_name}_qa_export.csv",
         },
     )
+
+
+# ── 微信绑定管理 ───────────────────────────────────────────────────────────
+
+@bp.route('/admin/wechat-bindings')
+@admin_required
+def wechat_bindings_page():
+    from app.models import get_all_wechat_bindings
+    bindings = get_all_wechat_bindings()
+    return render_template('admin_wechat_bindings.html', bindings=bindings)
+
+
+@bp.route('/admin/wechat-bindings/unbind', methods=['POST'])
+@admin_required
+def wechat_unbind():
+    from app.models import unbind_wechat
+    openid = request.form.get('openid', '').strip()
+    if openid:
+        unbind_wechat(openid)
+        flash(f'已解除绑定 {openid[:20]}...')
+    return redirect(url_for('admin.wechat_bindings_page'))

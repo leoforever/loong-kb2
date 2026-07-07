@@ -173,6 +173,29 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_role_kb_role ON role_kb_permissions(role_id)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_query_log_user ON query_log(user_id)')
 
+        # WeChat binding table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS wechat_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                wechat_openid TEXT NOT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_wx_bindings_openid ON wechat_bindings(wechat_openid)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_wx_bindings_userid ON wechat_bindings(user_id)')
+
+        # App config (key-value store, e.g. wx_bot token)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS app_config (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
     logger.info(f"Database initialized: {DB_PATH}")
 
 
@@ -207,6 +230,13 @@ def get_user_by_id(user_id):
         c = conn.cursor()
         c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
         return c.fetchone()
+
+
+def update_user_password(user_id, password_hash):
+    """更新用户密码（仅内部调用，调用前请验证身份）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('UPDATE users SET password_hash = ? WHERE user_id = ?', (password_hash, user_id))
 
 
 def get_all_users():
@@ -453,3 +483,94 @@ def is_rag_kb(kb_id):
     if not kb:
         return False
     return bool(kb.get('rag_dataset_id'))
+
+
+# ==============================
+# WeChat binding operations
+# ==============================
+
+def get_wechat_binding(user_id):
+    """获取用户的所有微信绑定（一用户可多微信）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM wechat_bindings WHERE user_id=? AND is_active=1', (user_id,))
+        return c.fetchall()
+
+
+def get_wechat_binding_by_openid(openid):
+    """根据 openid 查找绑定（一个 openid 只属于一个用户）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM wechat_bindings WHERE wechat_openid=? AND is_active=1', (openid,))
+        return c.fetchone()
+
+
+def upsert_wechat_binding(user_id, openid):
+    """新增/更新微信绑定（一用户可多微信）：
+    - 如果该 openid 已绑定其他用户，先解绑（原用户自动失效）
+    - 如果该 openid 已绑定同一用户，更新时间戳
+    - 同一用户可以绑定多个不同的 openid
+    """
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        # 检查 openid 是否已属于其他用户
+        c.execute('SELECT user_id FROM wechat_bindings WHERE wechat_openid=? AND is_active=1', (openid,))
+        row = c.fetchone()
+        if row and row['user_id'] != user_id:
+            # openid 被另一个用户占用，先解绑那个用户
+            c.execute('DELETE FROM wechat_bindings WHERE wechat_openid=?', (openid,))
+
+        # 检查自己是否已绑定这个 openid
+        c.execute(
+            'SELECT id FROM wechat_bindings WHERE user_id=? AND wechat_openid=?',
+            (user_id, openid)
+        )
+        existing = c.fetchone()
+        if existing:
+            # 已存在，更新为 active
+            c.execute(
+                'UPDATE wechat_bindings SET is_active=1, created_at=CURRENT_TIMESTAMP WHERE id=?',
+                (existing['id'],)
+            )
+        else:
+            # 新增
+            c.execute(
+                'INSERT INTO wechat_bindings (user_id, wechat_openid, is_active) VALUES (?, ?, 1)',
+                (user_id, openid)
+            )
+
+
+def unbind_wechat(openid):
+    """通过 openid 解除绑定（真删除，不是仅标记 inactive）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM wechat_bindings WHERE wechat_openid=?', (openid,))
+
+
+def get_all_wechat_bindings():
+    """获取所有用户的微信绑定（管理员用，含用户名）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT wb.id, wb.user_id, wb.wechat_openid, wb.is_active, wb.created_at,
+                   u.username
+            FROM wechat_bindings wb
+            JOIN users u ON wb.user_id = u.user_id
+            ORDER BY wb.created_at DESC
+        ''')
+        return c.fetchall()
+
+
+def get_app_config(key, default=None):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT value FROM app_config WHERE key=?', (key,))
+        row = c.fetchone()
+        return row['value'] if row else default
+
+
+def set_app_config(key, value):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)', (key, value))
+
