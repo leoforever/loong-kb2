@@ -7,3 +7,7 @@ numpy
 faiss-cpu
 cryptography
 pymupdf
+python-docx
+flask
+qrcode
+llama-index
