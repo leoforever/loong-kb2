@@ -9,6 +9,9 @@ import sys
 import os
 from pathlib import Path
 
+# 无缓冲输出（解决 nohup 下打印不立即显示的问题）
+sys.stdout.reconfigure(line_buffering=True)
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 # 读取 config.yaml
