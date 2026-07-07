@@ -6,3 +6,4 @@ aiohttp
 numpy
 faiss-cpu
 cryptography
+pymupdf
