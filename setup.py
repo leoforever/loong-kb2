@@ -66,6 +66,15 @@ def setup():
                 c.execute("UPDATE role_kb_permissions SET can_access = COALESCE(can_read, 0), can_edit = COALESCE(can_query, 0), can_manage = COALESCE(can_query, 0) WHERE can_read = 1 OR can_query = 1")
                 print("✓ 迁移旧权限数据（can_read→can_access, can_query→can_edit/can_manage）")
 
+    # Ensure admin role exists
+    admin_role = get_role_by_name('admin')
+    if not admin_role:
+        with get_db_conn() as conn:
+            c = conn.cursor()
+            c.execute("INSERT INTO roles (role_name, description) VALUES ('admin', '管理员')")
+        admin_role = get_role_by_name('admin')
+        print("✓ 创建 admin 角色")
+
     # Create admin user
     pwd_hash = bcrypt.hashpw('admin123'.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     try:
@@ -77,7 +86,6 @@ def setup():
         user_id = get_user_by_username('admin')['user_id']
 
     # Assign admin role
-    admin_role = get_role_by_name('admin')
     assign_role_to_user(user_id, admin_role['role_id'])
     print(f"✓ 分配 admin 角色")
 
