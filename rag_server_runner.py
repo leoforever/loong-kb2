@@ -18,7 +18,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('RAG_PORT', 5002))
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.resolve()))
+    from app.config import get_rag_server_config
+    port = get_rag_server_config().get('port', 5002)
 
     from app.rag_server.routes import rag_bp
     from flask import Flask
@@ -26,6 +29,6 @@ if __name__ == '__main__':
     app = Flask(__name__)
     app.register_blueprint(rag_bp)
 
-    logger.info(f"RAG-Server 启动中，监听 {port} ...")
+    logger.info(f"RAG-Server 启动中，监听 0.0.0.0:{port} ...")
     from waitress import serve
     serve(app, host='0.0.0.0', port=port, threads=4)

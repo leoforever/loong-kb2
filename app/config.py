@@ -98,10 +98,12 @@ def get_reranker_config():
 def get_rag_server_config():
     cfg = load_config()
     rag = cfg.get('rag_server', {})
+    port = rag.get('port', 5002)
     return {
         'enabled': rag.get('enabled', True),
-        'base_url': rag.get('base_url', 'http://localhost:5002').rstrip('/'),
+        'base_url': rag.get('base_url', f'http://localhost:{port}').rstrip('/'),
         'local_mode': rag.get('local_mode', False),
+        'port': port,
     }
 
 
