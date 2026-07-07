@@ -25,10 +25,11 @@ def create_app():
     from app.models import init_db
     init_db()
 
-    from app.routes import auth, qa, admin
+    from app.routes import auth, qa, admin, wechat_bind
     app.register_blueprint(auth.bp)
     app.register_blueprint(qa.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(wechat_bind.bp)
 
     # RAG-Server Blueprint（local_mode=True 时直调核心函数）
     from app.config import get_rag_server_config
@@ -84,6 +85,36 @@ def create_app():
         return redirect(url_for('qa.index'))
 
     logger.info("Loong KB 应用已启动")
+
+    # 启动内嵌微信 Bot（仅当 token 存在时）
+    from app.config import get_wx_bot_config
+    wx_cfg = get_wx_bot_config()
+    token = wx_cfg.get('ilink_token', '')
+
+    # 数据库 token 优先
+    if not token:
+        from app.models import get_app_config
+        token = get_app_config('wx_bot_token') or ''
+
+    if token:
+        from app.wx_bot import start_wx_bot, on_user_bound, on_user_unbound
+        import app.wx_bot as _wb
+
+        # 注册用户绑定回调：保存 openid → user_id 到内存（供 wx_bot 收消息时查）
+        def _on_bind(openid, user_id):
+            logger.info(f"[WxBot] User bound: openid={openid[:20]} -> user_id={user_id}")
+
+        def _on_unbind(openid):
+            logger.info(f"[WxBot] User unbound: openid={openid[:20]}")
+
+        on_user_bound(_on_bind)
+        on_user_unbound(_on_unbind)
+
+        start_wx_bot(token)
+        logger.info("[WxBot] 微信 Bot 已启动")
+    else:
+        logger.info("[WxBot] ilink_token 为空，请在 管理后台 设置")
+
     return app
 
 
@@ -91,4 +122,4 @@ if __name__ == '__main__':
     from app.config import get_server_config
     cfg = get_server_config()
     app = create_app()
-    app.run(host=cfg['host'], port=cfg['port'], debug=True)
+    app.run(host=cfg['host'], port=cfg['port'], debug=True, use_reloader=False)

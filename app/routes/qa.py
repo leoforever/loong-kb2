@@ -179,9 +179,20 @@ def index():
 @bp.route('/qa/ask', methods=['POST'])
 def ask():
     """Ask a question across all KBs — streaming response"""
-    if not session.get('user_id'):
+    # Support X-User-Id header for WeChat bot (multi_channel_ai)
+    wx_user_id = request.headers.get('X-User-Id')
+    if wx_user_id:
+        # WeChat message from multi_channel_ai - use user_id from header
+        try:
+            user_id = int(wx_user_id)
+        except (ValueError, TypeError):
+            logger.warn(f"[QA] ask | invalid X-User-Id: {wx_user_id}")
+            return jsonify({'error': '无效的用户标识'}), 401
+    elif not session.get('user_id'):
         logger.warn("[QA] ask | unauthorized access attempt")
         return jsonify({'error': '请先登录'}), 401
+    else:
+        user_id = session['user_id']
 
     data = request.json or {}
     session_id = data.get('session_id', '')
@@ -189,8 +200,6 @@ def ask():
     query = data.get('query', '').strip()
     requested_kb_ids = data.get('kb_ids')  # None means all
     provider = data.get('provider')  # optional override
-
-    user_id = session['user_id']
 
     # Clear history if requested (new conversation)
     if clear and session_id:
@@ -203,7 +212,7 @@ def ask():
     if not query:
         return jsonify({'error': '问题不能为空'}), 400
 
-    logger.info(f"[QA] ask | user_id={session['user_id']} | query='{query[:80]}' | session_id={session_id} | clear={clear}")
+    logger.info(f"[QA] ask | user_id={user_id} | query='{query[:80]}' | session_id={session_id} | clear={clear}")
 
     # Ensure history is loaded
     _load_history(user_id)
@@ -278,6 +287,9 @@ def ask():
                     all_chunks.extend(result.get('results', []))
                     if result.get('results'):
                         all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'rag'})
+                    # 详细记录每个 chunk
+                    for i, c in enumerate(result.get('results', [])):
+                        logger.info(f"[QA] ask |   RAG-chunk[{i}] score={c.get('score',0):.4f} kb={kb['kb_name']} doc={c.get('doc_name','')} content={c.get('content','')[:80]!r}")
                     logger.info(f"[QA] ask | KB={kb['kb_name']} (RAG) got {len(result.get('results',[]))} chunks")
                 else:
                     logger.error(f"[QA] ask | KB={kb['kb_name']} retrieve error: {result['error']}")
@@ -294,12 +306,16 @@ def ask():
 
     all_chunks.sort(key=lambda x: x.get('score', 0), reverse=True)
     top_chunks = all_chunks[:8]
-    logger.info(f"[QA] ask | total chunks={len(all_chunks)}, using top {len(top_chunks)} for LLM")
+    logger.info(f"[QA] ask | === TOP {len(top_chunks)} CHUNKS (sorted by score before rerank) ===")
+    for i, c in enumerate(top_chunks):
+        logger.info(f"[QA] ask |   [{i}] score={c.get('score',0):.4f} is_qa={c.get('is_qa',False)} kb={c.get('kb_name','')} content={c.get('content','')[:80]!r}")
 
     # Reranker 精筛（如果配置了）
     top_chunks = _rerank_chunks(query, top_chunks)
     chunk_texts = [c['content'] for c in top_chunks]
-    logger.info(f"[QA] ask | after reranker: {len(top_chunks)} chunks remain")
+    logger.info(f"[QA] ask | === AFTER RERANK: {len(top_chunks)} chunks remain ===")
+    for i, c in enumerate(top_chunks):
+        logger.info(f"[QA] ask |   [{i}] rerank_score={c.get('rerank_score',0):.4f} kb={c.get('kb_name','')} content={c.get('content','')[:80]!r}")
 
     # Stream the answer as SSE
     @stream_with_context
@@ -324,6 +340,7 @@ def ask():
         answer_text = _clean_answer_reference(answer_text)
         # Add to conversation cache
         _conversation_cache[user_id].append({'role': 'assistant', 'content': answer_text})
+        logger.info(f"[QA] ask | FINAL ANSWER (len={len(answer_text)}): {answer_text[:200]!r}")
         yield f"data: {json.dumps({'done': True, 'sources': all_sources, 'chunks': top_chunks, 'answer': answer_text})}\n\n"
 
     return Response(
@@ -335,6 +352,121 @@ def ask():
             'Connection': 'keep-alive',
         }
     )
+
+
+@bp.route('/qa/ask/json', methods=['POST'])
+def ask_json():
+    """
+    Non-streaming JSON version of /qa/ask for WeChat bot integration.
+    Returns a single JSON response (no SSE).
+    """
+    # Support X-User-Id header for WeChat bot (multi_channel_ai)
+    wx_user_id = request.headers.get('X-User-Id')
+    if wx_user_id:
+        try:
+            user_id = int(wx_user_id)
+        except (ValueError, TypeError):
+            logger.warn(f"[QA] ask/json | invalid X-User-Id: {wx_user_id}")
+            return jsonify({'error': '无效的用户标识'}), 401
+    elif not session.get('user_id'):
+        return jsonify({'error': '请先登录'}), 401
+    else:
+        user_id = session['user_id']
+
+    data = request.json or {}
+    query = data.get('query', '').strip()
+    requested_kb_ids = data.get('kb_ids')
+    provider = data.get('provider')
+
+    if not query:
+        return jsonify({'error': '问题不能为空'}), 400
+
+    logger.info(f"[QA] ask/json | user_id={user_id} | query='{query[:80]}'")
+
+    # Get accessible KBs
+    role_names = get_user_roles(user_id)
+    if not role_names:
+        return jsonify({'answer': '您暂未分配任何角色，无法访问知识库。', 'sources': []})
+
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT role_id FROM roles WHERE role_name IN (%s)' %
+                  ','.join(['?'] * len(role_names)), role_names)
+        role_ids = [row['role_id'] for row in c.fetchall()]
+
+    perms = get_kb_permissions_for_roles(role_ids)
+    all_kbs = get_all_kbs()
+    accessible_kbs = [kb for kb in all_kbs if perms.get(kb['kb_id'], {}).get('can_access')]
+
+    if requested_kb_ids is not None:
+        accessible_kbs = [kb for kb in accessible_kbs if kb['kb_id'] in requested_kb_ids]
+
+    if not accessible_kbs:
+        return jsonify({'answer': '当前角色暂无可访问的知识库。', 'sources': []})
+
+    # Retrieve from all accessible KBs
+    all_chunks = []
+    all_sources = []
+
+    for kb in accessible_kbs:
+        if kb.get('template_type') == 'qa':
+            try:
+                from app.services.local_qa import search_local_qa
+                results = search_local_qa(kb['kb_id'], query, top_k=20)
+                for r in results:
+                    all_chunks.append({
+                        'content': f"问题：{r['question']}\n答案：{r['answer']}",
+                        'score': r['score'],
+                        'kb_name': kb['kb_name'],
+                        'kb_id': kb['kb_id'],
+                        'is_qa': True,
+                    })
+                if results:
+                    all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'qa'})
+            except Exception as e:
+                logger.error(f"[QA] ask/json | KB={kb['kb_name']} (QA) exception: {e}")
+
+    for kb in accessible_kbs:
+        if kb.get('template_type') != 'qa':
+            try:
+                from app.services.rag_kb_service import RAGServerKBService
+                svc = RAGServerKBService(rag_dataset_id=kb.get('rag_dataset_id', ''), kb_name=kb.get('kb_name', ''))
+                result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+                if 'error' not in result:
+                    for chunk in result.get('results', []):
+                        chunk['kb_name'] = kb['kb_name']
+                        chunk['kb_id'] = kb['kb_id']
+                        chunk['is_qa'] = False
+                    all_chunks.extend(result.get('results', []))
+                    if result.get('results'):
+                        all_sources.append({'kb_id': kb['kb_id'], 'kb_name': kb['kb_name'], 'type': 'rags'})
+            except Exception as e:
+                logger.error(f"[QA] ask/json | KB={kb['kb_name']} exception: {e}")
+
+    if not all_chunks:
+        return jsonify({'answer': '抱歉，未在任何知识库中找到相关内容。', 'sources': []})
+
+    all_chunks.sort(key=lambda x: x.get('score', 0), reverse=True)
+    top_chunks = all_chunks[:8]
+
+    # Rerank if configured
+    from app.routes.qa import _rerank_chunks
+    top_chunks = _rerank_chunks(query, top_chunks)
+    chunk_texts = [c['content'] for c in top_chunks]
+
+    # Generate answer
+    from app.services.llm import generate_answer
+    answer, _ = generate_answer(chunk_texts, query, provider=provider)
+    answer = _clean_answer_reference(answer)
+
+    # Save to log
+    save_query_log(user_id, accessible_kbs[0]['kb_id'], query, answer, 0)
+
+    return jsonify({
+        'answer': answer,
+        'sources': all_sources,
+        'chunks': top_chunks,
+    })
 
 
 @bp.route('/qa/<int:kb_id>', methods=['GET', 'POST'])

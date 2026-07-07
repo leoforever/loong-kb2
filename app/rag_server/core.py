@@ -24,20 +24,55 @@ class FixedRecursiveCharacterTextSplitter:
     def split_text(self, text: str) -> list[str]:
         if not text.strip():
             return []
-        separator = self.separator
+        return self._split(text, self.separator)
+
+    def _split(self, text: str, separator: str) -> list[str]:
+        """递归切割：优先按 separator 分段，超长段落递归降级"""
+        chunk_size = self.chunk_size
+        if chunk_size <= 0:
+            chunk_size = 512
+        parts = text.split(separator)
         splits, current = [], ""
-        for part in text.split(separator):
-            if len(current) + len(part) <= self.chunk_size:
+
+        for part in parts:
+            # 正常情况：累加到 chunk_size 以内
+            if len(current) + len(part) <= chunk_size:
                 current += part + separator
             else:
+                # current 已满，保存
                 if current.strip():
                     splits.append(current.strip())
-                # 滚动窗口
-                if self.chunk_overlap > 0 and len(current) > self.chunk_overlap:
-                    overlap_text = current[-self.chunk_overlap:]
+                # part 本身是否超过 chunk_size？递归降级切分
+                if len(part) > chunk_size:
+                    if separator == "\n\n":
+                        # 降级到 \n 切
+                        sub_splits = self._split(part, "\n")
+                        if sub_splits:
+                            # 第一个子块作为 current
+                            current = sub_splits[0]
+                            # 剩余子块逐个加入
+                            for ss in sub_splits[1:]:
+                                if len(current) + len(ss) <= chunk_size:
+                                    current += "\n" + ss
+                                else:
+                                    if current.strip():
+                                        splits.append(current.strip())
+                                    current = ss
+                        else:
+                            current = ""
+                    elif separator == "\n":
+                        # 再降级到固定字符数切割
+                        sub_splits = [part[i:i+chunk_size] for i in range(0, len(part), chunk_size)]
+                        current = sub_splits[0] if sub_splits else ""
+                        for ss in sub_splits[1:]:
+                            if current.strip():
+                                splits.append(current.strip())
+                            current = ss
+                    else:
+                        current = part[:chunk_size]
                 else:
-                    overlap_text = ""
-                current = overlap_text + part + separator
+                    current = part + separator
+
         if current.strip():
             splits.append(current.strip())
         return [s for s in splits if s.strip()]
@@ -110,19 +145,28 @@ class SiliconFlowEmbedding:
     def embed(self, texts: list[str]) -> list[np.ndarray]:
         if not texts:
             return []
-        import requests
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        payload = {"model": self.model, "input": texts}
-        resp = requests.post(f"{self.base_url}/v1/embeddings", json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()["data"]
-        result = []
-        for item in sorted(data, key=lambda x: x["index"]):
-            vec = np.array(item["embedding"], dtype=np.float32)
-            if len(vec) != self.dim:
-                vec = np.pad(vec, (0, self.dim - len(vec))) if len(vec) < self.dim else vec[:self.dim]
-            result.append(vec)
-        return result
+        import requests, logging as _log
+        _log.getLogger().info(f"[SiliconFlow Embed] POST /v1/embeddings model={self.model} texts_count={len(texts)} first_text_len={len(texts[0]) if texts else 0}")
+        # 限制单次请求的文本数量和每个文本长度，避免超限
+        MAX_BATCH = 50
+        MAX_TEXT_LEN = 800
+        results = []
+        for i in range(0, len(texts), MAX_BATCH):
+            batch = texts[i:i+MAX_BATCH]
+            # 截断超长文本
+            batch = [t[:MAX_TEXT_LEN] if len(t) > MAX_TEXT_LEN else t for t in batch]
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            payload = {"model": self.model, "input": batch}
+            resp = requests.post(f"{self.base_url}/v1/embeddings", json=payload, headers=headers, timeout=60)
+            _log.getLogger().info(f"[SiliconFlow Embed] batch {i//MAX_BATCH} status={resp.status_code} body={resp.text[:150]}")
+            resp.raise_for_status()
+            data = resp.json()["data"]
+            for item in sorted(data, key=lambda x: x["index"]):
+                vec = np.array(item["embedding"], dtype=np.float32)
+                if len(vec) != self.dim:
+                    vec = np.pad(vec, (0, self.dim - len(vec))) if len(vec) < self.dim else vec[:self.dim]
+                results.append(vec)
+        return results
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -138,10 +182,15 @@ class SiliconFlowReranker:
     def rerank(self, query: str, candidates: list[str], top_n: int = 5) -> list[tuple[int, float]]:
         if not candidates:
             return []
-        import requests
+        import requests, logging as _log
+        # 截断超长文档，避免 siliconflow rerank 报 400
+        MAX_DOC_LEN = 800
+        docs = [d[:MAX_DOC_LEN] for d in candidates]
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        payload = {"model": self.model, "query": query, "documents": candidates, "top_n": top_n}
+        payload = {"model": self.model, "query": query, "documents": docs, "top_n": top_n}
+        _log.getLogger().info(f"[SiliconFlow Rerank] query='{query[:40]}' docs={len(docs)} first_doc_len={len(docs[0]) if docs else 0}")
         resp = requests.post(f"{self.base_url}/v1/rerank", json=payload, headers=headers, timeout=30)
+        _log.getLogger().info(f"[SiliconFlow Rerank] status={resp.status_code} body={resp.text[:150]}")
         resp.raise_for_status()
         results = resp.json()["results"]
         return [(r["index"], r["relevance_score"]) for r in results]
@@ -329,6 +378,7 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
     """
     检索：支持 dense(semantic) + 可选 sparse(keyword) + 可选 rerank
     """
+    # ── 检索 ─────────────────────────────────────────────────────────────
     ec = CFG.get("embedding", {}).get("siliconflow", {})
     emb = SiliconFlowEmbedding(
         api_key=ec.get("api_key", ""),
@@ -340,10 +390,14 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
     index_path = _kb_index_file(dataset_id)
     chunks = _load_chunks(dataset_id)
 
+    logger.info(f"[RAG-Retrieve] dataset_id={dataset_id} query='{query}' top_k={top_k} rerank={rerank} | chunks_count={len(chunks)} index_exists={index_path.exists()}")
+
     if not chunks or not index_path.exists():
+        logger.warning(f"[RAG-Retrieve] no chunks or index missing for {dataset_id}")
         return []
 
     index = faiss.read_index(str(index_path))
+    logger.info(f"[RAG-Retrieve] index.ntotal={index.ntotal}")
 
     # Semantic search
     qvec = emb.embed([query])[0]
@@ -359,13 +413,17 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
         if not content or idx in seen:
             continue
         seen.add(idx)
+        score = float(1.0 / (1.0 + dist))
         results.append({
             "doc_id": chunk["doc_id"],
             "content": content,
-            "score": float(1.0 / (1.0 + dist)),
+            "score": score,
             "name": chunk.get("name", ""),
             "char_count": chunk.get("char_count", 0),
         })
+        logger.info(f"[RAG-Retrieve]   [FAISS] idx={idx} dist={dist:.4f} score={score:.4f} name={chunk.get('name','')} content_preview={content[:60]!r}")
+
+    logger.info(f"[RAG-Retrieve] FAISS returned {len(results)} results (before rerank)")
 
     # Rerank
     if rerank and results:
@@ -379,8 +437,15 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
             )
             texts = [r["content"] for r in results]
             reranked = reranker.rerank(query, texts, top_n=rerank_top_k)
+            logger.info(f"[RAG-Retrieve] Rerank returned: {reranked}")
             results = [results[i] for i, _ in reranked]
             for r, (_, score) in zip(results, reranked):
                 r["score"] = score
+        else:
+            logger.info(f"[RAG-Retrieve] rerank disabled (provider=none)")
 
-    return results[:top_k]
+    final = results[:top_k]
+    logger.info(f"[RAG-Retrieve] FINAL {len(final)} chunks for query='{query}'")
+    for i, r in enumerate(final):
+        logger.info(f"[RAG-Retrieve]   [{i}] score={r['score']:.4f} name={r.get('name','')} content={r['content'][:80]!r}")
+    return final

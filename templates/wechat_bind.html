@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}连接微信 - 龙芯知识库{% endblock %}
+{% block extra_style %}
+<style>
+.bind-container { max-width: 480px; margin: 40px auto; text-align: center; }
+.bind-card { background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); padding: 40px; }
+.bind-title { font-size: 22px; font-weight: 600; color: #333; margin-bottom: 8px; }
+.bind-sub { font-size: 14px; color: #888; margin-bottom: 32px; }
+.qr-box { border: 2px dashed #ddd; border-radius: 12px; padding: 24px; margin: 24px 0; }
+.qr-box img { width: 220px; height: 220px; display: block; margin: 0 auto; }
+.qr-tips { font-size: 13px; color: #888; margin-top: 16px; line-height: 1.8; }
+.qr-tips li { list-style: none; margin-bottom: 6px; }
+.status-msg { padding: 12px 20px; border-radius: 8px; font-size: 14px; margin-top: 16px; display: inline-block; }
+.status-pending { background: #fff8e1; color: #f57c00; border: 1px solid #ffecb3; }
+.status-succeed { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+.status-error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+.back-btn { display: inline-block; margin-top: 20px; color: #CC0000; text-decoration: none; font-size: 14px; }
+.back-btn:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+{% block content %}
+<div class="bind-container">
+    <div class="bind-card">
+        <div class="bind-title">{% if add_mode %}追加绑定微信{% else %}连接微信{% endif %}</div>
+        <div class="bind-sub">{% if add_mode %}扫码绑定第二个微信，绑定后可多设备使用{% else %}扫码绑定微信账号，绑定后可在微信中直接提问{% endif %}</div>
+
+        <div class="qr-box" id="qrBox">
+            <div style="color:#888; font-size:14px; padding:80px 0;">加载中...</div>
+        </div>
+
+        <div id="statusMsg" class="status-msg status-pending" style="display:none;"></div>
+
+        <div class="qr-tips">
+            <ul>
+                <li>1. 使用微信扫描上方二维码</li>
+                <li>2. 在微信中点击"确认登录"或"允许"</li>
+                <li>3. 绑定成功后即可在微信中提问</li>
+            </ul>
+        </div>
+
+        <a href="/qa" class="back-btn">← 返回问答页面</a>
+    </div>
+</div>
+
+<script>
+async function loadQR() {
+    const qrBox = document.getElementById('qrBox');
+    const statusMsg = document.getElementById('statusMsg');
+
+    try {
+        const resp = await fetch('/api/weixin/qr');
+        const data = await resp.json();
+
+        if (data.error) {
+            qrBox.innerHTML = '<div style="color:#c62828; padding:40px 0;">' + data.error + '</div>';
+            return;
+        }
+
+        // Show QR code (base64 data URL - no CORS issue)
+        if (data.qr_image) {
+            qrBox.innerHTML = '<img src="' + data.qr_image + '" alt="微信二维码" style="width:220px;height:220px;display:block;margin:0 auto;" />';
+        } else {
+            qrBox.innerHTML = '<div style="color:#c62828; padding:40px 0;">二维码加载失败</div>';
+            return;
+        }
+
+        // Start polling
+        showStatus('pending', '请使用微信扫描二维码');
+        pollStatus(data.qr_id);
+
+    } catch (e) {
+        qrBox.innerHTML = '<div style="color:#c62828; padding:40px 0;">加载失败: ' + e.message + '</div>';
+    }
+}
+
+let pollTimer = null;
+
+function pollStatus(qrId) {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        try {
+            const resp = await fetch('/api/weixin/binding-status/' + qrId, {signal: AbortSignal.timeout(70000)});
+            const data = await resp.json();
+
+            if (data.status === 'bound') {
+                clearInterval(pollTimer);
+                showStatus('succeed', '绑定成功！即将跳转到问答页面...');
+                setTimeout(() => { window.location.href = '/qa'; }, 1500);
+            } else if (data.status === 'scaned') {
+                showStatus('pending', '二维码已扫描，请在微信中确认登录');
+            } else if (data.status === 'expired') {
+                clearInterval(pollTimer);
+                showStatus('error', '二维码已过期，<a href="javascript:location.reload()">点击刷新</a>');
+            }
+        } catch (e) {
+            console.error('poll error', e);
+        }
+    }, 2000);
+}
+
+function showStatus(type, msg) {
+    const el = document.getElementById('statusMsg');
+    el.className = 'status-msg status-' + type;
+    el.style.display = 'inline-block';
+    el.innerHTML = msg;
+}
+
+loadQR();
+</script>
+{% endblock %}

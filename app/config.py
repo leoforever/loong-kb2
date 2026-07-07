@@ -56,8 +56,8 @@ def get_llm_config():
     # 用 provider 名直接查 config 里的对应节点
     provider_cfg = cfg.get(provider_name, {})
     backend_type = provider_cfg.get('type', 'minimax')   # type 字段声明 backend 类型
-    base['backend_type'] = backend_type
-    return {**base, **provider_cfg}
+    model = provider_cfg.get('model', '')
+    return {**base, 'backend_type': backend_type, 'model': model, **provider_cfg}
 
 
 def get_qwen_config():
@@ -102,4 +102,15 @@ def get_rag_server_config():
         'enabled': rag.get('enabled', True),
         'base_url': rag.get('base_url', 'http://localhost:5002').rstrip('/'),
         'local_mode': rag.get('local_mode', False),
+    }
+
+
+def get_wx_bot_config():
+    """读取微信 Bot 配置"""
+    cfg = load_config()
+    wx = cfg.get('wx_bot', {})
+    return {
+        'enabled': wx.get('enabled', False),
+        'ilink_token': wx.get('ilink_token', ''),
+        'ilink_base_url': wx.get('ilink_base_url', 'https://ilinkai.weixin.qq.com'),
     }

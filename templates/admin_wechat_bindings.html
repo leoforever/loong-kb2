@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}微信绑定管理 - 龙芯知识库{% endblock %}
+{% block content %}
+<div class="page-main">
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">微信绑定管理</h1>
+            <p style="color:#888; margin-top:4px; font-size:14px;">查看所有用户的微信绑定，支持解绑</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 class="section-title">绑定列表（共 {{ bindings|length }} 条）</h3>
+        {% if bindings %}
+        <table>
+            <thead>
+                <tr>
+                    <th>用户</th>
+                    <th>OpenID</th>
+                    <th>状态</th>
+                    <th>绑定时间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for b in bindings %}
+            <tr>
+                <td><strong>{{ b.username }}</strong></td>
+                <td style="font-size:12px; color:#666; max-width:200px; overflow:hidden; text-overflow:ellipsis;" title="{{ b.wechat_openid }}">{{ b.wechat_openid }}</td>
+                <td>
+                    {% if b.is_active %}
+                    <span class="tag" style="background:#52c41a;">已连接</span>
+                    {% else %}
+                    <span class="tag" style="background:#999;">已断开</span>
+                    {% endif %}
+                </td>
+                <td style="color:#999; font-size:13px;">{{ b.created_at }}</td>
+                <td>
+                    <form method="POST" action="{{ url_for('admin.wechat_unbind') }}" onsubmit="return confirm('确认解除该绑定？')" style="margin:0;">
+                        <input type="hidden" name="openid" value="{{ b.wechat_openid }}">
+                        <button type="submit" class="btn btn-danger btn-sm">解绑</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p style="color:#999; text-align:center; padding:30px;">暂无绑定记录</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

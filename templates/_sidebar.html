@@ -1,11 +1,15 @@
 {# Sidebar fragment for admin pages #}
 <div class="sidebar">
     <div class="card" style="padding:8px 0;">
-        {% if is_admin %}
-        <div class="sidebar-title">管理后台</div>
+        <div class="sidebar-title">导航</div>
         <a href="/qa" class="sidebar-link {% if request.path == '/qa' %}active{% endif %}">
             <span class="icon">💬</span> 问答
         </a>
+        <a href="/bind/weixin" class="sidebar-link {% if request.path.startswith('/bind') %}active{% endif %}">
+            <span class="icon">💬</span> 微信绑定
+        </a>
+        {% if is_admin %}
+        <div class="sidebar-title" style="margin-top:12px;">管理后台</div>
         <a href="/admin/users" class="sidebar-link {% if '/admin/users' in request.path %}active{% endif %}">
             <span class="icon">👥</span> 用户管理
         </a>
@@ -15,11 +19,11 @@
         <a href="/admin/kbs" class="sidebar-link {% if '/admin/kbs' in request.path %}active{% endif %}">
             <span class="icon">📚</span> 知识库管理
         </a>
-        {% elif has_edit_permission %}
-        <div class="sidebar-title">文件管理</div>
-        <a href="/qa" class="sidebar-link {% if request.path == '/qa' %}active{% endif %}">
-            <span class="icon">💬</span> 问答
+        <a href="/admin/wechat-bindings" class="sidebar-link {% if '/admin/wechat-bindings' in request.path %}active{% endif %}">
+            <span class="icon">💬</span> 微信管理
         </a>
+        {% elif has_edit_permission %}
+        <div class="sidebar-title" style="margin-top:12px;">文件管理</div>
         <a href="/admin/kbs" class="sidebar-link {% if '/admin/kbs' in request.path %}active{% endif %}">
             <span class="icon">📚</span> 文件管理
         </a>
