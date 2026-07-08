@@ -10,7 +10,7 @@ WeChat binding routes.
   3. confirmed 时写入 wechat_bindings 表，刷新 bot token
 """
 
-from flask import Blueprint, jsonify, session, render_template, request
+from flask import Blueprint, jsonify, session, render_template, request, redirect, url_for
 import logging, json, time, requests, io, base64, qrcode, secrets, struct
 
 bp = Blueprint('wechat_bind', __name__)
@@ -37,12 +37,14 @@ def _get_bot_token() -> str:
 # ── 页面路由 ───────────────────────────────────────────────────────────────
 @bp.route('/bind/weixin')
 def bind_page():
-    """查看/管理已绑定的微信列表"""
+    """查看已绑定微信；有绑定则显示列表，无绑定则直接跳转二维码页"""
     if 'user_id' not in session:
-        from flask import redirect, url_for
         return redirect(url_for('auth.login'))
     from app.models import get_wechat_binding
     bindings = get_wechat_binding(session['user_id'])
+    if not bindings:
+        # 无绑定，直接跳转扫码页
+        return redirect(url_for('wechat_bind.bind_add_page'))
     return render_template('wechat_bound.html', bindings=bindings,
                          openids=[b['wechat_openid'] for b in bindings])
 
@@ -51,7 +53,6 @@ def bind_page():
 def bind_add_page():
     """追加新微信（强制显示二维码，不判断已有绑定）"""
     if 'user_id' not in session:
-        from flask import redirect, url_for
         return redirect(url_for('auth.login'))
     return render_template('wechat_bind.html', add_mode=True)
 
