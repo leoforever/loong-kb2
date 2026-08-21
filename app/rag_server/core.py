@@ -362,6 +362,7 @@ def upsert_document(dataset_id: str, text: str, filename: str,
                     "char_count": len(child_text),
                     "name": filename,
                     "created_at": datetime.now().isoformat(),
+                    "mode": mode,
                 })
                 child_texts.append(child_text)
         texts_to_embed = child_texts
@@ -383,6 +384,7 @@ def upsert_document(dataset_id: str, text: str, filename: str,
                 "char_count": len(child_text),
                 "name": filename,
                 "created_at": datetime.now().isoformat(),
+                "mode": mode,
             })
             child_texts.append(child_text)
         texts_to_embed = child_texts
@@ -404,6 +406,7 @@ def upsert_document(dataset_id: str, text: str, filename: str,
                     "char_count": len(child_text),
                     "name": filename,
                     "created_at": datetime.now().isoformat(),
+                    "mode": mode,
                 })
                 child_texts.append(child_text)
         texts_to_embed = child_texts
@@ -491,18 +494,29 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
         parent_content = chunk.get("parent_content")   # 父子分段才有
 
         # 父子模式：按 (doc_id, parent_index) 去重，同父只保留首个（最高分）
-        if parent_content is not None:
+        chunk_mode = chunk.get("mode", "general")
+        if parent_content is not None and chunk_mode == "paragraph":
+            # 父子分段‑段落模式：返回父段落全文
             parent_key = (chunk["doc_id"], chunk["parent_index"])
             if parent_key in seen_parents:
                 continue
             seen_parents.add(parent_key)
-            # 命中子 chunk → 返回父 chunk 全文作为上下文
             display_content = parent_content
             display_char_count = len(parent_content)
-            logger.info(f"[RAG-Retrieve]   [PARENT] idx={idx} parent_key={parent_key} "
+            logger.info(f"[RAG-Retrieve]   [PARAGRAPH] idx={idx} parent_key={parent_key} "
                         f"child={child_text[:40]!r}... → return parent({display_char_count}chars)")
+        elif parent_content is not None and chunk_mode == "parent_child":
+            # 全文父模式：返回整篇完整原文
+            parent_key = (chunk["doc_id"], chunk["parent_index"])
+            if parent_key in seen_parents:
+                continue
+            seen_parents.add(parent_key)
+            display_content = parent_content
+            display_char_count = len(parent_content)
+            logger.info(f"[RAG-Retrieve]   [FULLTEXT] idx={idx} "
+                        f"child={child_text[:40]!r}... → return full_doc({display_char_count}chars)")
         else:
-            # 通用模式：直接返回 chunk 内容
+            # 普通分段（flat）：直接返回 chunk 内容
             display_content = child_text
             display_char_count = chunk.get("char_count", len(child_text))
             logger.info(f"[RAG-Retrieve]   [CHUNK]  idx={idx} content={child_text[:40]!r}")
