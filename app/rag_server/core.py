@@ -373,8 +373,35 @@ def parse_file_to_text(file_data: bytes, filename: str) -> str:
                         parts.append(line)
                 parts.append("")
             return "\n\n".join(parts)
+        elif ext == ".xls":
+            import io as _io, xlrd
+            wb = xlrd.open_workbook(file_contents=file_data, filename='dummy.xls')
+            parts = []
+            for sheet_idx in range(wb.nsheets):
+                sheet = wb.sheet(sheet_idx)
+                parts.append(f"[Sheet: {sheet.name}]")
+                for row_idx in range(sheet.nrows):
+                    row = sheet.row_values(row_idx)
+                    line = "  ".join(str(c) for c in row if c is not None and str(c).strip())
+                    if line.strip():
+                        parts.append(line)
+                parts.append("")
+            return "\n\n".join(parts)
         else:
-            return file_data.decode("utf-8", errors="replace")
+            # 未知文本格式或二进制格式，直接 decode 或拒绝
+            # 二进制格式（.exe/.bin/.dat 等）decode 后是乱码，拒绝写入
+            try:
+                decoded = file_data.decode("utf-8")
+                # 能 decode 成功且无太多乱码字符，才视为文本
+                bad_chars = sum(1 for b in decoded if ord(b) == 0xfffd)
+                if bad_chars > len(decoded) * 0.1:  # 超过10%乱码视为二进制
+                    raise ValueError(f"unsupported binary format: {ext}")
+                return decoded
+            except UnicodeDecodeError:
+                raise ValueError(
+                    f"不支持的文件格式: {ext}。"
+                    f"支持的格式有：.txt, .md, .pdf, .docx, .doc, .xlsx, .xls"
+                )
     except Exception as e:
         raise RuntimeError(f"file parse failed for {filename}: {e}")
 

@@ -144,7 +144,7 @@
             <td style="padding:3px 8px;border-bottom:1px solid #ddd;"></td>
             <td style="padding:3px 8px;border-bottom:1px solid #ddd;" colspan="7">
                 <form class="doc-upload-form" id="upload-form-{{ kb.kb_id }}" enctype="multipart/form-data">
-                    <input type="file" name="file" accept=".txt,.pdf,.docx,.md,.doc" required>
+                    <input type="file" name="file" accept=".txt,.pdf,.docx,.doc,.xlsx,.xls,.md" required>
                     <button type="button" onclick="uploadDoc({{ kb.kb_id }})">上传到知识库</button>
                     <span class="err-msg" id="upload-err-{{ kb.kb_id }}"></span>
                 </form>
@@ -771,6 +771,16 @@ async function uploadDoc(kbId) {
     const fileInput = form.querySelector('input[type=file]');
     if (!fileInput.files.length) {
         errSpan.textContent = '请先选择文件';
+        return;
+    }
+    // 前端格式校验
+    const SUPPORTED_EXTS = ['.txt', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.md'];
+    const fileName = fileInput.files[0].name.toLowerCase();
+    const ext = '.' + fileName.split('.').pop();
+    if (!SUPPORTED_EXTS.includes(ext)) {
+        errSpan.textContent = '文件格式不支持。支持格式：' + SUPPORTED_EXTS.join('、');
+        btn.disabled = false;
+        btn.textContent = '上传到知识库';
         return;
     }
     const btn = form.querySelector('button');
