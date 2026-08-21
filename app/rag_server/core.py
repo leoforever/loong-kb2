@@ -79,56 +79,90 @@ class FixedRecursiveCharacterTextSplitter:
 
 
 class HierarchicalSplitter:
-    """父子分段：父 chunk 包含子 chunk"""
-    def __init__(self, parent_chunk_size: int = 2048, child_chunk_size: int = 512,
-                 parent_sep: str = "\n\n", child_sep: str = "\n"):
-        self.parent_chunk_size = parent_chunk_size
+    """
+    全文父模式：整篇原始文档作为唯一父块，切细小子块用于向量检索。
+    任意子块命中 → 返回整篇原始文档（parent_content = 原始全文）。
+    """
+    def __init__(self, child_chunk_size: int = 512, child_sep: str = "\n"):
         self.child_chunk_size = child_chunk_size
+        self.child_sep = child_sep
+
+    def split_text(self, text: str) -> list[dict]:
+        # 整篇文本作为唯一父块
+        parent = text
+        child_splitter = FixedRecursiveCharacterTextSplitter(
+            separator=self.child_sep,
+            chunk_size=self.child_chunk_size
+        )
+        children = child_splitter.split_text(parent)
+        # parent_index=0 固定，因为全文只有唯一一个父块
+        return [{
+            "parent": parent,
+            "parent_index": 0,
+            "children": children,
+        }]
+
+
+class ParagraphSplitter:
+    """
+    父子分段‑段落模式：每个段落作为父块，父块内再切细小子块。
+    用于 general 模式。
+    """
+    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 0,
+                 parent_sep: str = "\n\n", child_sep: str = "\n"):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self.parent_sep = parent_sep
         self.child_sep = child_sep
 
     def split_text(self, text: str) -> list[dict]:
-        # 先生成父 chunk
-        parent_splitter = FixedRecursiveCharacterTextSplitter(separator=self.parent_sep,
-                                                               chunk_size=self.parent_chunk_size)
-        parents = parent_splitter.split_text(text)
-        result = []
-        for i, parent in enumerate(parents):
-            # 父 chunk 内部再用子分段
-            child_splitter = FixedRecursiveCharacterTextSplitter(separator=self.child_sep,
-                                                                  chunk_size=self.child_chunk_size)
-            children = child_splitter.split_text(parent)
-            result.append({
-                "parent": parent,
-                "parent_index": i,
-                "children": children,
-            })
-        return result
-
-
-class ParagraphSplitter:
-    """段落分段：每个段落为父 chunk"""
-    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 128):
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.child_splitter = FixedRecursiveCharacterTextSplitter(separator="\n",
-                                                                    chunk_size=chunk_size,
-                                                                    chunk_overlap=chunk_overlap)
-
-    def split_text(self, text: str) -> list[dict]:
-        paragraphs = re.split(r'\n{2,}', text)
+        # 按段落分割 → 每个段落作为父块
+        paragraphs = re.split(self.parent_sep, text)
         result = []
         for i, para in enumerate(paragraphs):
             para = para.strip()
             if not para:
                 continue
-            children = self.child_splitter.split_text(para)
+            # 父块内再切子块
+            child_splitter = FixedRecursiveCharacterTextSplitter(
+                separator=self.child_sep,
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap
+            )
+            children = child_splitter.split_text(para)
             result.append({
                 "parent": para,
                 "parent_index": i,
                 "children": children,
             })
         return result
+
+
+class FlatSplitter:
+    """
+    普通分段：直接切分为 flat 子块，无父子层级。
+    每个子块存入向量库，检索时直接返回子块内容（不做父块回溯）。
+    parent_content = None 标识此模式。
+    """
+    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 128,
+                 separator: str = "\n\n"):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.separator = separator
+        self._splitter = FixedRecursiveCharacterTextSplitter(
+            separator=separator,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap
+        )
+
+    def split_text(self, text: str) -> list[dict]:
+        chunks = self._splitter.split_text(text)
+        # 每个 chunk 的 parent = child = chunk 自身，parent_content=None 标识 flat 模式
+        return [{
+            "parent": c,
+            "parent_index": i,
+            "children": [c],      # children[0] == parent → upsert 识别为 flat 模式
+        } for i, c in enumerate(chunks)]
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -238,13 +272,21 @@ def _save_chunks(dataset_id: str, chunks: list[dict]):
 
 
 def _build_node_parser(mode: str):
+    """
+    mode → 分段器映射：
+    - general      → FlatSplitter（普通分段，flat 子块，直接返回子块）
+    - parent_child → HierarchicalSplitter（全文父，整篇原文=唯一父块，返回完整原文）
+    - paragraph    → ParagraphSplitter（父子分段‑段落，每个段落=父块，返回父段落）
+    """
     if mode == "parent_child":
-        return HierarchicalSplitter(parent_chunk_size=2048, child_chunk_size=512,
-                                    parent_sep="\n\n", child_sep="\n")
-    elif mode == "paragraph":
-        return ParagraphSplitter(chunk_size=512, chunk_overlap=128)
+        # 全文父模式：整篇原文作为唯一父块
+        return HierarchicalSplitter(child_chunk_size=512, child_sep="\n")
+    elif mode == "general":
+        # 普通分段：flat 子块，无父子层级，直接返回子块
+        return FlatSplitter(chunk_size=512, chunk_overlap=128, separator="\n\n")
     else:
-        return FixedRecursiveCharacterTextSplitter(separator="\n\n", chunk_size=512, chunk_overlap=0)
+        # 父子分段‑段落模式：每个段落作为父块，父块内切子块，返回父段落
+        return ParagraphSplitter(chunk_size=512, chunk_overlap=0, parent_sep="\n\n", child_sep="\n")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -303,30 +345,68 @@ def upsert_document(dataset_id: str, text: str, filename: str,
     doc_id = f"{max_doc_id + 1}-{datetime.now().strftime('%H%M%S%f')}"
 
     parser = _build_node_parser(mode)
-    if mode in ("parent_child", "paragraph"):
+    if mode == "parent_child":
+        # ── 全文父模式：子 chunk 嵌入 → 命中后返回整篇原始文档 ─────────────
         hier_chunks = parser.split_text(text)
-        child_texts = []
-        for hc in hier_chunks:
-            child_texts.extend(hc["children"])
         flat_chunks = []
-        offset = 0
+        child_texts = []
+
         for hc in hier_chunks:
-            parent_char_count = len(hc["parent"])
+            for ci, child_text in enumerate(hc["children"]):
+                flat_chunks.append({
+                    "doc_id": doc_id,
+                    "chunk_id": f"{hc['parent_index']}-{ci}",
+                    "content": child_text,                    # ← 子块内容（嵌入向量库）
+                    "parent_content": hc["parent"],           # ← 整篇原文（全文父模式）
+                    "parent_index": hc["parent_index"],
+                    "char_count": len(child_text),
+                    "name": filename,
+                    "created_at": datetime.now().isoformat(),
+                })
+                child_texts.append(child_text)
+        texts_to_embed = child_texts
+
+    elif mode == "general":
+        # ── 普通分段（flat）：子块即是完整块，直接嵌入，直接返回子块 ─────────
+        hier_chunks = parser.split_text(text)
+        flat_chunks = []
+        child_texts = []
+
+        for hc in hier_chunks:
+            child_text = hc["children"][0] if hc["children"] else hc["parent"]
             flat_chunks.append({
                 "doc_id": doc_id,
-                "content": hc["parent"],
-                "char_count": parent_char_count,
-                "offset": offset,
+                "chunk_id": f"{hc['parent_index']}-0",
+                "content": child_text,
+                "parent_content": None,                    # ← None = flat 模式，retrieve 直接返回 content
                 "parent_index": hc["parent_index"],
+                "char_count": len(child_text),
+                "name": filename,
+                "created_at": datetime.now().isoformat(),
             })
-            offset += parent_char_count
-        texts_to_embed = [hc["parent"] for hc in hier_chunks]
-        node_type = "parent"
+            child_texts.append(child_text)
+        texts_to_embed = child_texts
+
     else:
-        raw_splits = parser.split_text(text)
-        flat_chunks = [{"doc_id": doc_id, "content": s, "char_count": len(s)} for s in raw_splits]
-        texts_to_embed = raw_splits
-        node_type = "chunk"
+        # ── 父子分段‑段落模式：每个段落作为父块，父块内再切子块，返回父段落 ──
+        hier_chunks = parser.split_text(text)
+        flat_chunks = []
+        child_texts = []
+
+        for hc in hier_chunks:
+            for ci, child_text in enumerate(hc["children"]):
+                flat_chunks.append({
+                    "doc_id": doc_id,
+                    "chunk_id": f"{hc['parent_index']}-{ci}",
+                    "content": child_text,                    # ← 子块（嵌入向量库）
+                    "parent_content": hc["parent"],           # ← 父段落原文
+                    "parent_index": hc["parent_index"],
+                    "char_count": len(child_text),
+                    "name": filename,
+                    "created_at": datetime.now().isoformat(),
+                })
+                child_texts.append(child_text)
+        texts_to_embed = child_texts
 
     # 嵌入
     ec = CFG.get("embedding", {}).get("siliconflow", {})
@@ -338,31 +418,19 @@ def upsert_document(dataset_id: str, text: str, filename: str,
     )
     vecs = emb.embed(texts_to_embed)
 
-    # 写入 FAISS
+    # ── 写入 FAISS ───────────────────────────────────────────────────────
     dim = len(vecs[0]) if vecs else 1024
+    vectors = np.array(vecs, dtype=np.float32)
     if index_path.exists():
         index = faiss.read_index(str(index_path))
-        start_id = index.ntotal
-        vectors = np.array(vecs, dtype=np.float32)
     else:
         index = faiss.IndexFlatL2(dim)
-        start_id = 0
-        vectors = np.array(vecs, dtype=np.float32)
-
     index.add(vectors)
     faiss.write_index(index, str(index_path))
 
-    # 更新 chunks（保存完整的 flat_chunks，包含 content）
-    if mode in ("parent_child", "paragraph"):
-        for fc in flat_chunks:
-            fc["name"] = filename
-            fc["created_at"] = datetime.now().isoformat()
-        chunks.extend(flat_chunks)
-    else:
-        for fc in flat_chunks:
-            fc["name"] = filename
-            fc["created_at"] = datetime.now().isoformat()
-        chunks.extend(flat_chunks)
+    # ── 追加写入 chunks.json ──────────────────────────────────────────────
+    # flat_chunks 在构造时已含 name/created_at（父子分段通用）
+    chunks.extend(flat_chunks)
     _save_chunks(dataset_id, chunks)
 
     return {"id": doc_id, "char_count": len(text)}
@@ -376,9 +444,11 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
              rerank: bool = True,
              rerank_top_k: int = 8) -> list[dict]:
     """
-    检索：支持 dense(semantic) + 可选 sparse(keyword) + 可选 rerank
+    检索逻辑（统一入口）：
+    - 普通分段（general, parent_content=None）：直接返回子 chunk 内容
+    - 全文父模式（parent_child, parent_content=整篇原文）：命中后返回整篇原文
+    - 父子分段‑段落模式（paragraph, parent_content=父段落原文）：命中后返回父段落原文
     """
-    # ── 检索 ─────────────────────────────────────────────────────────────
     ec = CFG.get("embedding", {}).get("siliconflow", {})
     emb = SiliconFlowEmbedding(
         api_key=ec.get("api_key", ""),
@@ -390,43 +460,69 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
     index_path = _kb_index_file(dataset_id)
     chunks = _load_chunks(dataset_id)
 
-    logger.info(f"[RAG-Retrieve] dataset_id={dataset_id} query='{query}' top_k={top_k} rerank={rerank} | chunks_count={len(chunks)} index_exists={index_path.exists()}")
+    logger.info(f"[RAG-Retrieve] dataset_id={dataset_id} query='{query}' top_k={top_k} rerank={rerank} chunks_count={len(chunks)}")
 
     if not chunks or not index_path.exists():
-        logger.warning(f"[RAG-Retrieve] no chunks or index missing for {dataset_id}")
+        logger.warning(f"[RAG-Retrieve] no chunks or index for {dataset_id}")
         return []
 
     index = faiss.read_index(str(index_path))
     logger.info(f"[RAG-Retrieve] index.ntotal={index.ntotal}")
 
-    # Semantic search
+    # ── Step 1：向量检索（用子 chunk 匹配） ───────────────────────────────
     qvec = emb.embed([query])[0]
     qvec = np.array([qvec], dtype=np.float32)
-    distances, indices = index.search(qvec, min(top_k * 2, index.ntotal))
+    search_k = min(top_k * 3, index.ntotal)   # 多取一些，父子模式会合并
+    distances, indices = index.search(qvec, search_k)
 
-    seen, results = set(), []
+    # ── Step 2：组装结果，按 parent 去重 ──────────────────────────────────
+    # 父子分段模式：同父 chunk 下的多个子 chunk 可能同时命中，只返回得分最高那个父
+    seen_parents: set[tuple] = set()
+    child_results: list[dict] = []   # 原始子 chunk 命中结果（用于 rerank）
+
     for dist, idx in zip(distances[0], indices[0]):
         if idx < 0 or idx >= len(chunks):
             continue
         chunk = chunks[idx]
-        content = chunk.get("content", "")
-        if not content or idx in seen:
+        child_text = chunk.get("content", "")
+        if not child_text:
             continue
-        seen.add(idx)
+
+        parent_content = chunk.get("parent_content")   # 父子分段才有
+
+        # 父子模式：按 (doc_id, parent_index) 去重，同父只保留首个（最高分）
+        if parent_content is not None:
+            parent_key = (chunk["doc_id"], chunk["parent_index"])
+            if parent_key in seen_parents:
+                continue
+            seen_parents.add(parent_key)
+            # 命中子 chunk → 返回父 chunk 全文作为上下文
+            display_content = parent_content
+            display_char_count = len(parent_content)
+            logger.info(f"[RAG-Retrieve]   [PARENT] idx={idx} parent_key={parent_key} "
+                        f"child={child_text[:40]!r}... → return parent({display_char_count}chars)")
+        else:
+            # 通用模式：直接返回 chunk 内容
+            display_content = child_text
+            display_char_count = chunk.get("char_count", len(child_text))
+            logger.info(f"[RAG-Retrieve]   [CHUNK]  idx={idx} content={child_text[:40]!r}")
+
         score = float(1.0 / (1.0 + dist))
-        results.append({
+        child_results.append({
             "doc_id": chunk["doc_id"],
-            "content": content,
+            "content": display_content,
             "score": score,
             "name": chunk.get("name", ""),
-            "char_count": chunk.get("char_count", 0),
+            "char_count": display_char_count,
+            # 调试用字段
+            "_child_text": child_text,
+            "_is_parent": parent_content is not None,
         })
-        logger.info(f"[RAG-Retrieve]   [FAISS] idx={idx} dist={dist:.4f} score={score:.4f} name={chunk.get('name','')} content_preview={content[:60]!r}")
 
-    logger.info(f"[RAG-Retrieve] FAISS returned {len(results)} results (before rerank)")
+    logger.info(f"[RAG-Retrieve] FAISS+dedup returned {len(child_results)} results")
 
-    # Rerank
-    if rerank and results:
+    # ── Step 3：Rerank ──────────────────────────────────────────────────
+    if rerank and child_results:
         rc = CFG.get("reranker", {})
         if rc.get("provider") != "none":
             rk = rc.get("siliconflow", {})
@@ -435,17 +531,22 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
                 model=rk.get("model", "BAAI/bge-reranker-v2-m3"),
                 base_url=rk.get("base_url", "https://api.siliconflow.cn"),
             )
-            texts = [r["content"] for r in results]
+            texts = [r["content"] for r in child_results]
             reranked = reranker.rerank(query, texts, top_n=rerank_top_k)
-            logger.info(f"[RAG-Retrieve] Rerank returned: {reranked}")
-            results = [results[i] for i, _ in reranked]
-            for r, (_, score) in zip(results, reranked):
+            child_results = [child_results[i] for i, _ in reranked]
+            for r, (_, score) in zip(child_results, reranked):
                 r["score"] = score
         else:
-            logger.info(f"[RAG-Retrieve] rerank disabled (provider=none)")
+            logger.info(f"[RAG-Retrieve] rerank disabled")
 
-    final = results[:top_k]
+    final = child_results[:top_k]
+    # 清理调试字段
+    for r in final:
+        r.pop("_child_text", None)
+        r.pop("_is_parent", None)
+
     logger.info(f"[RAG-Retrieve] FINAL {len(final)} chunks for query='{query}'")
     for i, r in enumerate(final):
-        logger.info(f"[RAG-Retrieve]   [{i}] score={r['score']:.4f} name={r.get('name','')} content={r['content'][:80]!r}")
+        logger.info(f"[RAG-Retrieve]   [{i}] score={r['score']:.4f} name={r.get('name','')} "
+                    f"chars={r.get('char_count',0)} content={r['content'][:60]!r}")
     return final
