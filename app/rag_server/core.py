@@ -360,6 +360,19 @@ def parse_file_to_text(file_data: bytes, filename: str) -> str:
                 reader = DocxReader()
                 docs = reader.load_data(file=_io.BytesIO(file_data))
                 return "\n\n".join(d.get_content() for d in docs)
+        elif ext == ".xlsx":
+            import io as _io, openpyxl
+            wb = openpyxl.load_workbook(_io.BytesIO(file_data), data_only=True)
+            parts = []
+            for sheet in wb.sheetnames:
+                ws = wb[sheet]
+                parts.append(f"[Sheet: {sheet}]")
+                for row in ws.iter_rows(values_only=True):
+                    line = "  ".join(str(c) for c in row if c is not None)
+                    if line.strip():
+                        parts.append(line)
+                parts.append("")
+            return "\n\n".join(parts)
         else:
             return file_data.decode("utf-8", errors="replace")
     except Exception as e:
