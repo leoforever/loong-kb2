@@ -59,6 +59,11 @@ rag_server:
   enabled: true
   local_mode: true
 
+# RAG 分段策略配置
+rag:
+  # 全文父模式（parent_child）最大文本大小，超过则拒绝写入（单位：字节，默认 2MB）
+  full_doc_max_size: 2097152
+
 # 微信 Bot（内嵌 iLink 协议）
 # enabled: false 则不启动微信连接
 wx_bot:

@@ -82,13 +82,20 @@ class HierarchicalSplitter:
     """
     全文父模式：整篇原始文档作为唯一父块，切细小子块用于向量检索。
     任意子块命中 → 返回整篇原始文档（parent_content = 原始全文）。
+    文本大小超过 max_text_size 时拒绝写入，防止超长 parent_content 压垮 LLM 上下文。
     """
-    def __init__(self, child_chunk_size: int = 512, child_sep: str = "\n"):
+    def __init__(self, child_chunk_size: int = 512, child_sep: str = "\n",
+                 max_text_size: int = 2 * 1024 * 1024):   # 默认 2MB
         self.child_chunk_size = child_chunk_size
         self.child_sep = child_sep
+        self.max_text_size = max_text_size
 
     def split_text(self, text: str) -> list[dict]:
-        # 整篇文本作为唯一父块
+        if len(text) > self.max_text_size:
+            raise ValueError(
+                f"全文父模式：文档大小 {len(text):,} 字节 超过限制 "
+                f"{self.max_text_size:,} 字节（2MB）。请上传更小的文件或切换为普通分段模式。"
+            )
         parent = text
         child_splitter = FixedRecursiveCharacterTextSplitter(
             separator=self.child_sep,
@@ -106,35 +113,70 @@ class HierarchicalSplitter:
 class ParagraphSplitter:
     """
     父子分段‑段落模式：每个段落作为父块，父块内再切细小子块。
-    用于 general 模式。
+    若段落超过 parent_size，则将该段落切分为多个子段落（伪父块），
+    每个子段落内再切子块，防止整篇文档成为一个超大父段落。
     """
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 0,
-                 parent_sep: str = "\n\n", child_sep: str = "\n"):
+                 parent_sep: str = "\n\n", child_sep: str = "\n",
+                 parent_size: int = 2000):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.parent_sep = parent_sep
         self.child_sep = child_sep
+        self.parent_size = parent_size
 
     def split_text(self, text: str) -> list[dict]:
-        # 按段落分割 → 每个段落作为父块
+        # 按段落分割 → 每个段落作为候选父块
         paragraphs = re.split(self.parent_sep, text)
         result = []
-        for i, para in enumerate(paragraphs):
+        global_idx = 0   # 全局 parent_index，保证唯一
+
+        for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
-            # 父块内再切子块
-            child_splitter = FixedRecursiveCharacterTextSplitter(
-                separator=self.child_sep,
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap
-            )
-            children = child_splitter.split_text(para)
-            result.append({
-                "parent": para,
-                "parent_index": i,
-                "children": children,
-            })
+
+            # ── 超长段落：二次切分为多个伪父块 ─────────────────────
+            if len(para) > self.parent_size:
+                # 将超长段落按 parent_size 切为多个子段落（伪父块）
+                sub_para_splitter = FixedRecursiveCharacterTextSplitter(
+                    separator=self.child_sep,
+                    chunk_size=self.parent_size,
+                    chunk_overlap=0,
+                )
+                sub_paragraphs = sub_para_splitter.split_text(para)
+                for sub_para in sub_paragraphs:
+                    sub_para = sub_para.strip()
+                    if not sub_para:
+                        continue
+                    child_splitter = FixedRecursiveCharacterTextSplitter(
+                        separator=self.child_sep,
+                        chunk_size=self.chunk_size,
+                        chunk_overlap=self.chunk_overlap,
+                    )
+                    children = child_splitter.split_text(sub_para)
+                    result.append({
+                        "parent": sub_para,
+                        "parent_index": global_idx,
+                        "children": children,
+                    })
+                    global_idx += 1
+
+            # ── 正常段落：直接作为父块 ───────────────────────────
+            else:
+                child_splitter = FixedRecursiveCharacterTextSplitter(
+                    separator=self.child_sep,
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                )
+                children = child_splitter.split_text(para)
+                result.append({
+                    "parent": para,
+                    "parent_index": global_idx,
+                    "children": children,
+                })
+                global_idx += 1
+
         return result
 
 
@@ -279,14 +321,19 @@ def _build_node_parser(mode: str):
     - paragraph    → ParagraphSplitter（父子分段‑段落，每个段落=父块，返回父段落）
     """
     if mode == "parent_child":
-        # 全文父模式：整篇原文作为唯一父块
-        return HierarchicalSplitter(child_chunk_size=512, child_sep="\n")
+        # 全文父模式：整篇原文作为唯一父块，超长拒绝写入
+        rag_cfg = CFG.get("rag", {})
+        max_text_size = rag_cfg.get("full_doc_max_size", 2 * 1024 * 1024)
+        return HierarchicalSplitter(child_chunk_size=512, child_sep="\n",
+                                   max_text_size=max_text_size)
     elif mode == "general":
         # 普通分段：flat 子块，无父子层级，直接返回子块
         return FlatSplitter(chunk_size=512, chunk_overlap=128, separator="\n\n")
     else:
         # 父子分段‑段落模式：每个段落作为父块，父块内切子块，返回父段落
-        return ParagraphSplitter(chunk_size=512, chunk_overlap=0, parent_sep="\n\n", child_sep="\n")
+        # 若段落超过 parent_size，则切为多个伪父块，防止超大父段落
+        return ParagraphSplitter(chunk_size=512, chunk_overlap=0, parent_sep="\n\n", child_sep="\n",
+                                parent_size=2000)
 
 
 # ─────────────────────────────────────────────────────────────────
