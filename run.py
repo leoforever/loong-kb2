@@ -20,7 +20,12 @@ logger = logging.getLogger(__name__)
 def create_app():
     app = Flask(__name__)
     app.secret_key = os.environ.get('SECRET_KEY', 'loong-kb-secret-2026')
-    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
+    # 上传文件大小限制（字节），默认 16MB，可通过 config.yaml server.max_upload_size 配置
+    from app.config import get_server_config
+    srv_cfg = get_server_config()
+    max_upload = srv_cfg.get('max_upload_size', 16 * 1024 * 1024)
+    app.config['MAX_CONTENT_LENGTH'] = max_upload
+    logger.info(f"MAX_CONTENT_LENGTH = {max_upload:,} bytes ({max_upload/1024/1024:.0f}MB)")
 
     from app.models import init_db
     init_db()

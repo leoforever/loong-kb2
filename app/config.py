@@ -31,6 +31,7 @@ def get_server_config():
     return {
         'host': server.get('host', '0.0.0.0'),
         'port': server.get('port', 5001),
+        'max_upload_size': server.get('max_upload_size', 16 * 1024 * 1024),
     }
 
 def get_minimax_config():

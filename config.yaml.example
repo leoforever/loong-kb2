@@ -4,7 +4,9 @@
 # 服务配置
 server:
   host: "0.0.0.0"
-  port: 5001
+  port: 6001
+  # 上传文件大小限制（单位：字节，默认 16MB），建议不超过 200MB
+  max_upload_size: 16777216
 
 # LLM 配置
 # provider: 当前支持 minimax / qwen，切换只需改这一行
