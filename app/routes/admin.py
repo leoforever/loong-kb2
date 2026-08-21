@@ -615,7 +615,8 @@ def upload_kb_document(kb_id):
         if kb.get('rag_dataset_id'):
             from app.services.rag_kb_service import RAGServerKBService
             svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
-            result = svc.upload_document(tmp_path, filename=file.filename)
+            result = svc.upload_document(tmp_path, filename=file.filename,
+                                        doc_form=kb.get('template_type'))
         else:
             return jsonify({'error': '非 RAG 知识库或知识库不存在'}), 400
     finally:

@@ -10,11 +10,11 @@ from app.config import get_rag_server_config
 logger = logging.getLogger(__name__)
 
 
-# Dify doc_form → RAG-Server mode 映射
+# 页面 template_type → RAG-Server mode 映射
 _DOC_FORM_MODE_MAP = {
-    'text_model':        'general',
-    'hierarchical_model': 'parent_child',
-    'paragraph':          'paragraph',
+    'text_plain':              'general',      # 普通分段 → 子块
+    'hierarchical_full':        'parent_child', # 全文父 → 完整原文
+    'hierarchical_paragraph':   'paragraph',    # 父子分段‑段落 → 父段落
 }
 
 
@@ -230,10 +230,10 @@ class RAGServerKBService:
     def upload_document(self, file_path, filename=None, doc_form=None, process_rule=None):
         """
         POST /datasets/{id}/documents（multipart）
-        doc_form → mode 映射：
-          text_model / None       → general
-          hierarchical_model       → parent_child
-          paragraph                → paragraph
+        页面 template_type → mode 映射：
+          text_plain              → general（普通分段，子块）
+          hierarchical_full        → parent_child（全文父，完整原文）
+          hierarchical_paragraph   → paragraph（父子分段‑段落，父段落）
         返回 {'document_id': str, 'batch': str} 或 {'error': str}
         """
         import os
@@ -276,7 +276,7 @@ class RAGServerKBService:
                                 indexing_technique='high_quality', summary_index_setting=None):
         """
         POST /datasets/{id}/documents（JSON，纯文本）
-        doc_form → mode 映射同上。
+        页面 template_type → mode 映射同上。
         返回 {'document_id': str, 'batch': str} 或 {'error': str}
         """
         mode = _DOC_FORM_MODE_MAP.get(doc_form, 'general') if doc_form else 'general'
