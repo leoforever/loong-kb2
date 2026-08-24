@@ -344,17 +344,65 @@ def parse_file_to_text(file_data: bytes, filename: str) -> str:
     try:
         if ext == ".pdf":
             import pymupdf
-            doc_text = ""
+
+            def _extract_page_text(page):
+                """pymupdf block 字典模式：区分文本块和表格块"""
+                blocks = page.get_text("dict", flags=8).get("blocks", [])
+                parts = []
+                for block in blocks:
+                    btype = block.get("type", 0)
+
+                    if btype == 0:
+                        # 文本块：保留行结构
+                        for line in block.get("lines", []):
+                            words = []
+                            for span in line.get("spans", []):
+                                t = span.get("text", "").strip()
+                                if t:
+                                    words.append(t)
+                            if words:
+                                parts.append(" ".join(words))
+                    elif btype == 1:
+                        # 图片块：跳过
+                        pass
+                    # block type 2 在 pymupdf 里是矢量，不是表格
+                    parts.append("")
+                return "\n".join(parts)
+
             with pymupdf.open(stream=file_data, filetype="pdf") as pdf:
-                for page in pdf:
-                    doc_text += page.get_text()
-            return doc_text
+                pages = [_extract_page_text(page) for page in pdf]
+            return "\n\n".join(pages)
         elif ext in (".docx", ".doc"):
             import io as _io
             try:
                 import docx
                 doc = docx.Document(_io.BytesIO(file_data))
-                return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+                # 1. 段落文本（保留原有逻辑）
+                para_texts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+
+                # 2. 表格提取：表头列名=值 格式
+                table_parts = []
+                for table in doc.tables:
+                    if not table.rows:
+                        continue
+                    # 第一行作为列名（表头）
+                    headers = [cell.text.strip() for cell in table.rows[0].cells]
+                    for row in table.rows[1:]:
+                        cells = [cell.text.strip() for cell in row.cells]
+                        if any(c for c in cells):  # 过滤全空行
+                            # 只保留非空的 列名=值
+                            pairs = []
+                            for h, c in zip(headers, cells):
+                                if c:
+                                    pairs.append(f"{h}={c}")
+                            if pairs:
+                                table_parts.append(" | ".join(pairs))
+                    table_parts.append("")  # 表格之间空行
+
+                # 3. 合并：表格在前（结构化数据优先命中），段落在后
+                return "\n\n".join(table_parts + para_texts)
+
             except ImportError:
                 from llama_index.readers.file import DocxReader
                 reader = DocxReader()
@@ -366,11 +414,25 @@ def parse_file_to_text(file_data: bytes, filename: str) -> str:
             parts = []
             for sheet in wb.sheetnames:
                 ws = wb[sheet]
+                rows = list(ws.iter_rows(values_only=True))
+                if not rows:
+                    continue
+
                 parts.append(f"[Sheet: {sheet}]")
-                for row in ws.iter_rows(values_only=True):
-                    line = "  ".join(str(c) for c in row if c is not None)
-                    if line.strip():
-                        parts.append(line)
+
+                # 第一行作为列名
+                header = [str(c).strip() if c is not None else "" for c in rows[0]]
+
+                # 后续行：列名=值 格式
+                for row in rows[1:]:
+                    cells = [str(c).strip() if c is not None else "" for c in row]
+                    if any(c for c in cells):  # 过滤全空行
+                        pairs = []
+                        for h, v in zip(header, cells):
+                            if v:  # 只保留非空值
+                                pairs.append(f"{h}={v}")
+                        if pairs:
+                            parts.append(" | ".join(pairs))
                 parts.append("")
             return "\n\n".join(parts)
         elif ext == ".xls":

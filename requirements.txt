@@ -8,6 +8,8 @@ faiss-cpu
 cryptography
 pymupdf
 python-docx
+openpyxl
+xlrd
 flask
 qrcode
 llama-index
