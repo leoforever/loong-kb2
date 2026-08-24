@@ -574,3 +574,39 @@ def set_app_config(key, value):
         c = conn.cursor()
         c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)', (key, value))
 
+
+# ==============================
+# WxBot 持久化状态（sync_buf + context_tokens）
+# ==============================
+
+def get_wx_bot_state() -> dict:
+    """读取WxBot持久化状态：get_updates_buf游标 + per-peer context_tokens"""
+    import json as _json
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT value FROM app_config WHERE key=?', ('wx_bot_sync_buf',))
+        row = c.fetchone()
+        sync_buf = row['value'] if row else ''
+
+        c.execute('SELECT value FROM app_config WHERE key=?', ('wx_bot_context_tokens',))
+        row = c.fetchone()
+        context_tokens = _json.loads(row['value']) if row and row['value'] else {}
+
+        return {
+            'sync_buf': sync_buf,
+            'context_tokens': context_tokens,
+        }
+
+
+def set_wx_bot_state(*, sync_buf: str = None, context_tokens: dict = None):
+    """写入WxBot持久化状态（只更新有值的字段）"""
+    import json as _json
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        if sync_buf is not None:
+            c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)',
+                      ('wx_bot_sync_buf', sync_buf))
+        if context_tokens is not None:
+            c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)',
+                      ('wx_bot_context_tokens', _json.dumps(context_tokens, ensure_ascii=False)))
+
