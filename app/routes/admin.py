@@ -735,18 +735,21 @@ def update_doc_metadata_route(kb_id, doc_id):
     svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
 
     if request.method == 'GET':
-        doc_meta = svc.get_document_metadata(doc_id)
-        return jsonify({'metadata': doc_meta})
+        doc_meta = svc.get_document_metadata(doc_id)  # returns [str, ...]
+        return jsonify({'tags': doc_meta})
 
-    # PATCH: 更新 metadata
-    data = request.get_json() or {}
-    if not isinstance(data, dict):
-        return jsonify({'error': '请求体必须是 JSON 对象'}), 400
-
-    result = svc.update_document_metadata(doc_id, data)
+    # PATCH: 更新 tags（接收 {"tags": [str,...]} 或直接 [str,...]）
+    data = request.get_json() or []
+    if isinstance(data, dict):
+        tags = data.get('tags', [])
+    else:
+        tags = data
+    if not isinstance(tags, list):
+        return jsonify({'error': 'tags 必须是数组'}), 400
+    result = svc.update_document_metadata(doc_id, tags)
     if 'error' in result:
         return jsonify(result), 500
-    return jsonify({'metadata': result})
+    return jsonify({'tags': result})
 
 
 @bp.route('/admin/kbs/<int:kb_id>/upload', methods=['POST'])

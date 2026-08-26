@@ -781,27 +781,20 @@ function openMetaModal(kbId, doc) {
     const modal = document.getElementById('meta-modal');
     const title = document.getElementById('meta-modal-title');
     const tagsDiv = document.getElementById('meta-tags-display');
-    const keyInput = document.getElementById('meta-key-input');
-    const valInput = document.getElementById('meta-val-input');
+    const input = document.getElementById('meta-tag-input');
     const errSpan = document.getElementById('meta-err');
 
     title.textContent = '标签管理 — ' + doc.name;
     errSpan.textContent = '';
-    keyInput.value = '';
-    valInput.value = '';
+    input.value = '';
 
-    // 渲染已有标签
-    const meta = doc.metadata || {};
-    if (Object.keys(meta).length === 0) {
-        tagsDiv.innerHTML = '<span style="color:#999;font-size:13px;">暂无标签</span>';
-    } else {
-        tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
-            `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
-                <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
-                <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
-            </span>`
-        ).join('');
-    }
+    const tags = doc.metadata && doc.metadata.tags ? doc.metadata.tags : [];
+    renderTags(tagsDiv, tags);
+
+    // 回车添加标签
+    input.onkeydown = function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); addTag(); }
+    };
 
     modal.style.display = 'flex';
 }
@@ -812,78 +805,67 @@ function closeMetaModal() {
     _metaKbId = null;
 }
 
-async function removeMetaTag(key) {
+function renderTags(container, tags) {
+    if (!tags || tags.length === 0) {
+        container.innerHTML = '<span style="color:#999;font-size:13px;">暂无标签</span>';
+        return;
+    }
+    container.innerHTML = tags.map(t =>
+        `<span style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
+            ${escHtml(t)}
+            <button onclick="removeTag(this, '${escHtml(t)}')" title="删除" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
+        </span>`
+    ).join('');
+}
+
+async function removeTag(btn, tag) {
     if (!_metaDocId || !_metaKbId) return;
     const errSpan = document.getElementById('meta-err');
     errSpan.textContent = '';
     try {
-        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
-            method: 'GET'
-        });
+        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`);
         const data = await resp.json();
-        const current = data.metadata || {};
-        delete current[key];
+        const current = data.tags || [];
+        const updated = current.filter(t => t !== tag);
         const upd = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
             method: 'PATCH',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(current)
+            body: JSON.stringify(updated)
         });
         const result = await upd.json();
         if (result.error) { errSpan.textContent = result.error; return; }
-        // 重新渲染
-        const tagsDiv = document.getElementById('meta-tags-display');
-        const meta = result.metadata || {};
-        if (Object.keys(meta).length === 0) {
-            tagsDiv.innerHTML = '<span style="color:#999;font-size:13px;">暂无标签</span>';
-        } else {
-            tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
-                `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
-                    <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
-                    <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
-                </span>`
-            ).join('');
-        }
+        renderTags(document.getElementById('meta-tags-display'), result.tags || []);
     } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
 }
 
-async function addMetaTag() {
+async function addTag() {
     if (!_metaDocId || !_metaKbId) return;
-    const keyInput = document.getElementById('meta-key-input');
-    const valInput = document.getElementById('meta-val-input');
+    const input = document.getElementById('meta-tag-input');
     const errSpan = document.getElementById('meta-err');
-    const key = keyInput.value.trim();
-    const val = valInput.value.trim();
+    const tag = input.value.trim();
     errSpan.textContent = '';
-    if (!key) { errSpan.textContent = '请输入标签名'; return; }
-    if (!val) { errSpan.textContent = '请输入标签值'; return; }
+    if (!tag) { errSpan.textContent = '请输入标签'; return; }
 
     const btn = document.getElementById('meta-add-btn');
     btn.disabled = true;
     try {
-        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
-            method: 'GET'
-        });
+        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`);
         const data = await resp.json();
-        const current = data.metadata || {};
-        current[key] = val;
+        const current = data.tags || [];
+        if (current.includes(tag)) {
+            errSpan.textContent = '标签已存在';
+            return;
+        }
+        const updated = [...current, tag];
         const upd = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
             method: 'PATCH',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(current)
+            body: JSON.stringify(updated)
         });
         const result = await upd.json();
         if (result.error) { errSpan.textContent = result.error; return; }
-        keyInput.value = '';
-        valInput.value = '';
-        // 重新渲染
-        const tagsDiv = document.getElementById('meta-tags-display');
-        const meta = result.metadata || {};
-        tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
-            `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
-                <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
-                <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
-            </span>`
-        ).join('');
+        input.value = '';
+        renderTags(document.getElementById('meta-tags-display'), result.tags || []);
     } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
     finally { btn.disabled = false; }
 }
@@ -1167,9 +1149,8 @@ function saveKBRerankModel(kbId) {
         <h3 id="meta-modal-title">标签管理</h3>
         <div id="meta-tags-display"></div>
         <div id="meta-add-form">
-            <input id="meta-key-input" placeholder="标签名，如：产品型号" maxlength="50" />
-            <input id="meta-val-input" placeholder="标签值，如：T42D6A0" maxlength="200" />
-            <button id="meta-add-btn" onclick="addMetaTag()" style="padding:5px 14px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">添加</button>
+            <input id="meta-tag-input" placeholder="输入标签后回车添加" maxlength="100" style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:4px;font-size:13px;" />
+            <button id="meta-add-btn" onclick="addTag()" style="padding:5px 14px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">添加</button>
         </div>
         <div id="meta-err"></div>
         <div style="text-align:right;margin-top:12px;">

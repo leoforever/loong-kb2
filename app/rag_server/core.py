@@ -318,7 +318,7 @@ def _save_chunks(dataset_id: str, chunks: list[dict]):
 
 
 def _load_doc_metadata(dataset_id: str) -> dict:
-    """返回 {doc_id: {key: value}}"""
+    """返回 {doc_id: [tag_str, ...]}"""
     f = _kb_doc_meta_file(dataset_id)
     if f.exists():
         with open(f, encoding="utf-8") as fp:
@@ -327,24 +327,21 @@ def _load_doc_metadata(dataset_id: str) -> dict:
 
 
 def _save_doc_metadata(dataset_id: str, doc_meta: dict):
-    """保存 {doc_id: {key: value}}"""
+    """保存 {doc_id: [tag_str, ...]}"""
     with open(_kb_doc_meta_file(dataset_id), "w", encoding="utf-8") as f:
         json.dump(doc_meta, f, ensure_ascii=False, indent=2)
 
 
-def update_doc_metadata(dataset_id: str, doc_id: str, metadata: dict) -> dict:
+def update_doc_metadata(dataset_id: str, doc_id: str, tags: list[str]) -> list[str]:
     """
-    更新指定文档的 metadata（原子读写）。
-    新 metadata 与现有合并后保存。
-    返回更新后的 metadata。
+    更新指定文档的 tags（原子读写）。直接替换为新列表。
+    返回更新后的 tags。
     """
     doc_meta = _load_doc_metadata(dataset_id)
-    existing = doc_meta.get(doc_id, {})
-    existing.update(metadata)
-    doc_meta[doc_id] = existing
+    doc_meta[doc_id] = tags
     _save_doc_metadata(dataset_id, doc_meta)
-    logger.info(f"[DocMeta] updated doc_id={doc_id} metadata={metadata}")
-    return existing
+    logger.info(f"[DocMeta] updated doc_id={doc_id} tags={tags}")
+    return tags
 
 
 def _build_node_parser(mode: str):
@@ -709,14 +706,14 @@ def retrieve(dataset_id: str, query: str, top_k: int = 8,
             logger.info(f"[RAG-Retrieve]   [CHUNK]  idx={idx} content={child_text[:40]!r}")
 
         score = float(1.0 / (1.0 + dist))
-        chunk_metadata = doc_meta.get(chunk["doc_id"], {})
+        chunk_tags = doc_meta.get(chunk["doc_id"], [])  # [tag_str, ...]
         child_results.append({
             "doc_id": chunk["doc_id"],
             "content": display_content,
             "score": score,
             "name": chunk.get("name", ""),
             "char_count": display_char_count,
-            "metadata": chunk_metadata,                      # ← 文档标签
+            "metadata": {"tags": chunk_tags},            # ← 统一结构 {"tags": [str]}
             # 调试用字段
             "_child_text": child_text,
             "_is_parent": parent_content is not None,
