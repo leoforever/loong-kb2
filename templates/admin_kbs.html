@@ -733,6 +733,7 @@ function renderDocs(kbId, docs, statusLabel, statusClass) {
             <td style="padding:3px 8px;border-bottom:1px solid #eee;text-align:left;color:#999;font-size:12px;">${doc.word_count ? doc.word_count.toLocaleString() + ' 字' : ''}</td>
             <td style="padding:3px 4px;border-bottom:1px solid #eee;" class="actions-cell">
                 <a href="/admin/kbs/${kbId}/documents/${doc.id}/download?filename=${encodeURIComponent(doc.name)}" class="btn btn-outline" style="padding:2px 6px;font-size:11px;color:#1976d2;border-color:#1976d2;" title="下载" target="_blank">下载</a>
+                <button onclick="openMetaModal(${kbId}, this.closest('tr')._doc)" data-doc-id="${doc.id}" style="padding:2px 6px;font-size:11px;color:#6a1b9a;border-color:#6a1b9a;background:#f3e5f5;border-radius:3px;cursor:pointer;" title="标签管理">标签</button>
                 <span class="del-btn-wrapper" data-doc-id="${doc.id}"></span>
             </td>
             <td style="padding:3px 8px;border-bottom:1px solid #eee;"></td>
@@ -746,6 +747,7 @@ function renderDocs(kbId, docs, statusLabel, statusClass) {
     let insertBeforeNode = row.nextSibling;
     for (let i = 0; i < newRows.length; i++) {
         const insertedRow = row.parentNode.insertBefore(newRows[i], insertBeforeNode);
+        insertedRow._doc = docs[i];  // 供 openMetaModal 读取 metadata
         // Dynamically create delete button via DOM API (bypass innerHTML template issues)
         if (isEditable) {
             const wrapper = insertedRow.querySelector('.del-btn-wrapper');
@@ -767,6 +769,123 @@ function escHtml(s) {
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
+}
+
+// ── 文档标签弹窗 ────────────────────────────────────────────────────────────
+let _metaDocId = null;
+let _metaKbId = null;
+
+function openMetaModal(kbId, doc) {
+    _metaKbId = kbId;
+    _metaDocId = doc.id;
+    const modal = document.getElementById('meta-modal');
+    const title = document.getElementById('meta-modal-title');
+    const tagsDiv = document.getElementById('meta-tags-display');
+    const keyInput = document.getElementById('meta-key-input');
+    const valInput = document.getElementById('meta-val-input');
+    const errSpan = document.getElementById('meta-err');
+
+    title.textContent = '标签管理 — ' + doc.name;
+    errSpan.textContent = '';
+    keyInput.value = '';
+    valInput.value = '';
+
+    // 渲染已有标签
+    const meta = doc.metadata || {};
+    if (Object.keys(meta).length === 0) {
+        tagsDiv.innerHTML = '<span style="color:#999;font-size:13px;">暂无标签</span>';
+    } else {
+        tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
+            `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
+                <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
+                <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
+            </span>`
+        ).join('');
+    }
+
+    modal.style.display = 'flex';
+}
+
+function closeMetaModal() {
+    document.getElementById('meta-modal').style.display = 'none';
+    _metaDocId = null;
+    _metaKbId = null;
+}
+
+async function removeMetaTag(key) {
+    if (!_metaDocId || !_metaKbId) return;
+    const errSpan = document.getElementById('meta-err');
+    errSpan.textContent = '';
+    try {
+        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
+            method: 'GET'
+        });
+        const data = await resp.json();
+        const current = data.metadata || {};
+        delete current[key];
+        const upd = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(current)
+        });
+        const result = await upd.json();
+        if (result.error) { errSpan.textContent = result.error; return; }
+        // 重新渲染
+        const tagsDiv = document.getElementById('meta-tags-display');
+        const meta = result.metadata || {};
+        if (Object.keys(meta).length === 0) {
+            tagsDiv.innerHTML = '<span style="color:#999;font-size:13px;">暂无标签</span>';
+        } else {
+            tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
+                `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
+                    <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
+                    <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
+                </span>`
+            ).join('');
+        }
+    } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
+}
+
+async function addMetaTag() {
+    if (!_metaDocId || !_metaKbId) return;
+    const keyInput = document.getElementById('meta-key-input');
+    const valInput = document.getElementById('meta-val-input');
+    const errSpan = document.getElementById('meta-err');
+    const key = keyInput.value.trim();
+    const val = valInput.value.trim();
+    errSpan.textContent = '';
+    if (!key) { errSpan.textContent = '请输入标签名'; return; }
+    if (!val) { errSpan.textContent = '请输入标签值'; return; }
+
+    const btn = document.getElementById('meta-add-btn');
+    btn.disabled = true;
+    try {
+        const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
+            method: 'GET'
+        });
+        const data = await resp.json();
+        const current = data.metadata || {};
+        current[key] = val;
+        const upd = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(current)
+        });
+        const result = await upd.json();
+        if (result.error) { errSpan.textContent = result.error; return; }
+        keyInput.value = '';
+        valInput.value = '';
+        // 重新渲染
+        const tagsDiv = document.getElementById('meta-tags-display');
+        const meta = result.metadata || {};
+        tagsDiv.innerHTML = Object.entries(meta).map(([k, v]) =>
+            `<span class="meta-tag" style="display:inline-block;background:#e3f2fd;border:1px solid #90caf9;border-radius:4px;padding:2px 8px;margin:2px;font-size:13px;cursor:default;">
+                <strong>${escHtml(k)}</strong>: ${escHtml(String(v))}
+                <button onclick="removeMetaTag('${escHtml(k)}')" title="删除此标签" style="background:none;border:none;color:#c00;cursor:pointer;font-size:13px;padding:0 0 0 4px;">×</button>
+            </span>`
+        ).join('');
+    } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
+    finally { btn.disabled = false; }
 }
 
 async function uploadDoc(kbId) {
@@ -993,4 +1112,69 @@ function saveKBRerankModel(kbId) {
         .finally(() => { btn.disabled = false; btn.textContent = '保存模型'; });
 }
 </script>
+
+<style>
+/* 文档标签弹窗 */
+#meta-modal {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+#meta-modal-box {
+    background: #fff;
+    border-radius: 8px;
+    padding: 24px 28px;
+    width: 480px;
+    max-width: 90vw;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+#meta-modal-box h3 {
+    margin: 0 0 16px;
+    font-size: 16px;
+    color: #333;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+#meta-tags-display {
+    min-height: 40px;
+    margin-bottom: 14px;
+}
+#meta-add-form {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+#meta-add-form input {
+    flex: 1;
+    padding: 5px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 13px;
+}
+#meta-err {
+    color: #c00;
+    font-size: 12px;
+    margin-top: 6px;
+    min-height: 16px;
+}
+</style>
+<div id="meta-modal" onclick="if(event.target===this)closeMetaModal()">
+    <div id="meta-modal-box">
+        <h3 id="meta-modal-title">标签管理</h3>
+        <div id="meta-tags-display"></div>
+        <div id="meta-add-form">
+            <input id="meta-key-input" placeholder="标签名，如：产品型号" maxlength="50" />
+            <input id="meta-val-input" placeholder="标签值，如：T42D6A0" maxlength="200" />
+            <button id="meta-add-btn" onclick="addMetaTag()" style="padding:5px 14px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px;">添加</button>
+        </div>
+        <div id="meta-err"></div>
+        <div style="text-align:right;margin-top:12px;">
+            <button onclick="closeMetaModal()" style="padding:5px 18px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:13px;">关闭</button>
+        </div>
+    </div>
+</div>
 {% endblock %}

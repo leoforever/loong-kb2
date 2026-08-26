@@ -180,6 +180,7 @@ class RAGServerKBService:
         if self.local_mode:
             from app.rag_server import core as _core
             chunks = _core._load_chunks(self.rag_dataset_id)
+            doc_meta = _core._load_doc_metadata(self.rag_dataset_id)  # {doc_id: {key: value}}
             docs = {}
             for c in chunks:
                 doc_id = c["doc_id"]
@@ -190,6 +191,7 @@ class RAGServerKBService:
                         "indexing_status": "completed",
                         "char_count": 0,
                         "created_at": c.get("created_at", ""),
+                        "metadata": doc_meta.get(doc_id, {}),   # ← 文档标签
                     }
                 docs[doc_id]["char_count"] += c.get("char_count", 0)
             all_docs = list(docs.values())
@@ -344,6 +346,24 @@ class RAGServerKBService:
         except Exception as e:
             logger.error(f"[RAG-Server] delete_document failed: {e}")
             return {'error': str(e)}
+
+    def get_document_metadata(self, doc_id):
+        """读取指定文档的 metadata 标签"""
+        if self.local_mode:
+            from app.rag_server import core as _core
+            doc_meta = _core._load_doc_metadata(self.rag_dataset_id)
+            return doc_meta.get(doc_id, {})
+        # 远程模式（暂不支持）
+        return {}
+
+    def update_document_metadata(self, doc_id, metadata: dict):
+        """更新指定文档的 metadata 标签（与现有值合并）"""
+        if self.local_mode:
+            from app.rag_server import core as _core
+            result = _core.update_doc_metadata(self.rag_dataset_id, doc_id, metadata)
+            return result
+        # 远程模式（暂不支持）
+        return {'error': '远程模式不支持 metadata 更新'}
 
     def download_document(self, doc_id, filename=None):
         """

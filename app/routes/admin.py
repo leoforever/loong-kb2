@@ -719,6 +719,36 @@ def delete_kb_document(kb_id, doc_id):
     return jsonify({'error': '知识库不存在'}), 404
 
 
+@bp.route('/admin/kbs/<int:kb_id>/documents/<path:doc_id>/metadata', methods=['PATCH', 'GET'])
+@kb_edit_required
+def update_doc_metadata_route(kb_id, doc_id):
+    """查询或更新文档的 metadata 标签"""
+    from app.models import get_kb_by_id
+    kb = get_kb_by_id(kb_id)
+    if not kb:
+        return jsonify({'error': '知识库不存在'}), 404
+    kb = dict(kb) if hasattr(kb, 'keys') else kb
+
+    if not kb.get('rag_dataset_id'):
+        return jsonify({'error': '非 RAG 知识库不支持此操作'}), 400
+
+    svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+
+    if request.method == 'GET':
+        doc_meta = svc.get_document_metadata(doc_id)
+        return jsonify({'metadata': doc_meta})
+
+    # PATCH: 更新 metadata
+    data = request.get_json() or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': '请求体必须是 JSON 对象'}), 400
+
+    result = svc.update_document_metadata(doc_id, data)
+    if 'error' in result:
+        return jsonify(result), 500
+    return jsonify({'metadata': result})
+
+
 @bp.route('/admin/kbs/<int:kb_id>/upload', methods=['POST'])
 @kb_edit_required
 def upload_kb_document(kb_id):

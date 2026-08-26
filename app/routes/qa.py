@@ -215,6 +215,21 @@ def _boost_keyword_chunks(query, chunks):
             boost += 0.3
             boost_reason.append('spec_struct')
 
+        # 文档 metadata 标签匹配（用户手动打的标签，如 {产品: "T42D6A0", 类型: "4U机架式"}）
+        # metadata 命中query词 → 每个命中的key-value额外+0.4
+        chunk_meta = chunk.get('metadata', {})
+        if chunk_meta:
+            meta_hits = []
+            for key, val in chunk_meta.items():
+                val_str = str(val)
+                for noun in query_nouns:
+                    if noun in val_str:
+                        meta_hits.append(f'{key}={val_str}')
+                        break
+            if meta_hits:
+                boost += 0.4 * len(meta_hits)
+                boost_reason.append(f'meta:{len(meta_hits)}({",".join(meta_hits)})')
+
         if boost > 0:
             chunk['score'] = original_score + boost
             chunk['_boosted'] = True
