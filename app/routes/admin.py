@@ -733,6 +733,7 @@ def update_doc_metadata_route(kb_id, doc_id):
         if not kb.get('rag_dataset_id'):
             return jsonify({'error': '非 RAG 知识库不支持此操作'}), 400
 
+        from app.services.rag_kb_service import RAGServerKBService
         svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
 
         if request.method == 'GET':
