@@ -481,9 +481,10 @@ def _user_has_any_kb_manage():
 
 
 @bp.route('/admin/kbs', methods=['POST'])
-@admin_required
+@role_admin_or_admin_required
 def create_kb():
     """手动注册已有 RAG KB（通过 Rag dataset ID）"""
+    user_id = session['user_id']
     kb_name = request.form.get('kb_name', '').strip()
     description = request.form.get('description', '').strip()
     rag_dataset_id = request.form.get('rag_dataset_id', '').strip()
@@ -492,8 +493,15 @@ def create_kb():
         flash('知识库名称不能为空', 'error')
         return redirect(url_for('admin.kbs'))
 
-    from app.models import create_kb
-    kb_id = create_kb(kb_name, description, template_type=None, rag_dataset_id=rag_dataset_id or None)
+    # 角色管理员创建时自动归属其角色
+    is_admin_user = require_admin(user_id)
+    role_ids_for_new_kb = None
+    if not is_admin_user:
+        role_ids_for_new_kb = get_managed_role_ids(user_id)
+    role_id = role_ids_for_new_kb[0] if role_ids_for_new_kb else None
+
+    from app.models import create_kb as mk_kb
+    kb_id = mk_kb(kb_name, description, template_type=None, rag_dataset_id=rag_dataset_id or None, role_id=role_id)
     flash(f'知识库 {kb_name} 创建成功', 'success')
     return redirect(url_for('admin.kbs'))
 
@@ -851,7 +859,7 @@ def update_permissions():
 # ==================== Model Listing ====================
 
 @bp.route('/admin/kbs/models/<model_type>')
-@admin_required
+@role_admin_or_admin_required
 def get_model_list(model_type):
     """返回 embedding/rerank 模型列表（RAG-Server 模式，无 Dify）"""
     if model_type not in ('text-embedding', 'rerank'):
