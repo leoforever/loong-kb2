@@ -27,8 +27,11 @@
 .status-queuing { background: #e8f0fe; color: #1967d2; }
 .doc-empty { padding: 8px 12px; color: #999; font-size: 13px; font-style: italic; }
 .doc-loading { padding: 8px 12px; color: #999; font-size: 13px; }
-.doc-file-row .actions-cell { text-align: right; padding: 3px 8px; border-bottom: 1px solid #eee; }
-.doc-file-row .actions-cell button { padding: 2px 8px; font-size: 11px; border-radius: 4px; cursor: pointer; }
+.doc-file-row .actions-cell { padding: 3px 8px; border-bottom: 1px solid #eee; white-space: nowrap; }
+.doc-file-row .actions-cell > * { display: inline-block; vertical-align: middle; margin-right: 4px; }
+.doc-file-row .actions-cell > *:last-child { margin-right: 0; }
+.doc-file-row .actions-cell button,
+.doc-file-row .actions-cell .btn { padding: 2px 6px; font-size: 11px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
 .doc-file-row .del-btn { background: #fce8e6; color: #c5221f; border: 1px solid #f0aaa8; }
 .doc-file-row .del-btn:hover { background: #fce8e6; }
 .doc-upload-row { display: none; }
