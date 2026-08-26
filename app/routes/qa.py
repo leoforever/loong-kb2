@@ -179,7 +179,7 @@ def _boost_keyword_chunks(query, chunks):
     # 添加查询中的重要名词（来自知识库词频分析，2026-08-26）
     important_nouns = ['设置', '状态', '编号', '配置', '接口', '密码',
                        '控制器', '服务器', '频率', '温度', '重启', '故障',
-                       '参数', '内存', '硬盘', '电源', '固件']
+                       '参数', '内存', '硬盘', '电源', '固件', '版本']
     query_nouns = []
     for noun in important_nouns:
         if noun in query:
