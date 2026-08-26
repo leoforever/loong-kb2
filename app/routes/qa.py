@@ -176,42 +176,30 @@ def _boost_keyword_chunks(query, chunks):
     if not chunks or not query:
         return chunks
     
-    import re
-    # 从查询中提取关键信息
-    # 比如从"龙芯AI服务器的机箱尺寸"中提取"机箱尺寸"、"900mm"等
-    
-    # 提取可能的产品型号
-    model_pattern = r'T\d+[A-Z0-9]+'
-    models = re.findall(model_pattern, query)
-    
-    # 添加查询中的重要名词
-    important_nouns = ['机箱', '尺寸', '规格', '参数', '内存', '处理器', '硬盘', '电源', '重量', '高度', '宽度', '深度']
+    # 添加查询中的重要名词（来自知识库词频分析，2026-08-26）
+    important_nouns = ['设置', '状态', '编号', '配置', '接口', '密码',
+                       '控制器', '服务器', '频率', '温度', '重启', '故障',
+                       '参数', '内存', '硬盘', '电源', '固件']
     query_nouns = []
     for noun in important_nouns:
         if noun in query:
             query_nouns.append(noun)
-    
-    if not models and not query_nouns:
+
+    if not query_nouns:
         return chunks
-    
-    logger.info(f"[QA] KeywordBoost | query='{query}' models={models} nouns={query_nouns}")
-    
+
+    logger.info(f"[QA] KeywordBoost | query='{query}' nouns={query_nouns}")
+
     # 对每个chunk进行检查和加分
     boosted = []
     for chunk in chunks:
         chunk = dict(chunk)  # 复制，避免修改原数据
         content = chunk.get('content', '')
         original_score = chunk.get('score', 0)
-        
+
         boost = 0.0
         boost_reason = []
-        
-        # 检查是否包含产品型号（强boost）
-        for model in models:
-            if model in content:
-                boost += 0.8
-                boost_reason.append(f'model:{model}')
-        
+
         # 检查是否同时包含多个查询名词（如"机箱"和"尺寸"）
         noun_count = sum(1 for noun in query_nouns if noun in content)
         if noun_count >= 2:
@@ -220,20 +208,20 @@ def _boost_keyword_chunks(query, chunks):
         elif noun_count == 1:
             boost += 0.15
             boost_reason.append(f'noun:{query_nouns[0]}')
-        
+
         # 如果content中有"参数名称=XXX | 规格介绍="这种结构，额外boost
         if '参数名称=' in content and '规格介绍=' in content:
             boost += 0.3
             boost_reason.append('spec_struct')
-        
+
         if boost > 0:
             chunk['score'] = original_score + boost
             chunk['_boosted'] = True
             chunk['_boost_reason'] = ','.join(boost_reason)
             logger.info(f"[QA] KeywordBoost | BOOST +{boost:.2f} ({boost_reason}) score {original_score:.4f}->{chunk['score']:.4f} content={content[:50]!r}")
-        
+
         boosted.append(chunk)
-    
+
     # 按新的分数重新排序
     boosted.sort(key=lambda x: x.get('score', 0), reverse=True)
     return boosted
