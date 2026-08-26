@@ -723,33 +723,37 @@ def delete_kb_document(kb_id, doc_id):
 @kb_edit_required
 def update_doc_metadata_route(kb_id, doc_id):
     """查询或更新文档的 metadata 标签"""
-    from app.models import get_kb_by_id
-    kb = get_kb_by_id(kb_id)
-    if not kb:
-        return jsonify({'error': '知识库不存在'}), 404
-    kb = dict(kb) if hasattr(kb, 'keys') else kb
+    try:
+        from app.models import get_kb_by_id
+        kb = get_kb_by_id(kb_id)
+        if not kb:
+            return jsonify({'error': '知识库不存在'}), 404
+        kb = dict(kb) if hasattr(kb, 'keys') else kb
 
-    if not kb.get('rag_dataset_id'):
-        return jsonify({'error': '非 RAG 知识库不支持此操作'}), 400
+        if not kb.get('rag_dataset_id'):
+            return jsonify({'error': '非 RAG 知识库不支持此操作'}), 400
 
-    svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
+        svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
 
-    if request.method == 'GET':
-        doc_meta = svc.get_document_metadata(doc_id)  # returns [str, ...]
-        return jsonify({'tags': doc_meta})
+        if request.method == 'GET':
+            doc_meta = svc.get_document_metadata(doc_id)  # returns [str, ...]
+            return jsonify({'tags': doc_meta})
 
-    # PATCH: 更新 tags（接收 {"tags": [str,...]} 或直接 [str,...]）
-    data = request.get_json() or []
-    if isinstance(data, dict):
-        tags = data.get('tags', [])
-    else:
-        tags = data
-    if not isinstance(tags, list):
-        return jsonify({'error': 'tags 必须是数组'}), 400
-    result = svc.update_document_metadata(doc_id, tags)
-    if 'error' in result:
-        return jsonify(result), 500
-    return jsonify({'tags': result})
+        # PATCH: 更新 tags（接收 {"tags": [str,...]} 或直接 [str,...]）
+        data = request.get_json() or []
+        if isinstance(data, dict):
+            tags = data.get('tags', [])
+        else:
+            tags = data
+        if not isinstance(tags, list):
+            return jsonify({'error': 'tags 必须是数组'}), 400
+        result = svc.update_document_metadata(doc_id, tags)
+        if 'error' in result:
+            return jsonify(result), 500
+        return jsonify({'tags': result})
+    except Exception as e:
+        logger.error(f"[Admin] update_doc_metadata_route error: {e}", exc_info=True)
+        return jsonify({'error': f'服务器错误: {str(e)}'}), 500
 
 
 @bp.route('/admin/kbs/<int:kb_id>/upload', methods=['POST'])
