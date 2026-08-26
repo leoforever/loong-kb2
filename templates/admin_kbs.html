@@ -824,17 +824,27 @@ async function removeTag(btn, tag) {
     errSpan.textContent = '';
     try {
         const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`);
-        const data = await resp.json();
-        const current = data.tags || [];
+        let current = [];
+        try {
+            const data = await resp.json();
+            current = Array.isArray(data.tags) ? data.tags : [];
+        } catch {
+            current = [];
+        }
         const updated = current.filter(t => t !== tag);
         const upd = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`, {
             method: 'PATCH',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(updated)
         });
-        const result = await upd.json();
-        if (result.error) { errSpan.textContent = result.error; return; }
-        renderTags(document.getElementById('meta-tags-display'), result.tags || []);
+        try {
+            const result = await upd.json();
+            if (result.error) { errSpan.textContent = result.error; return; }
+            renderTags(document.getElementById('meta-tags-display'), Array.isArray(result.tags) ? result.tags : []);
+        } catch {
+            // PATCH 失败时乐观移除本地显示
+            renderTags(document.getElementById('meta-tags-display'), updated);
+        }
     } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
 }
 
