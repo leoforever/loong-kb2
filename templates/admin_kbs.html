@@ -850,8 +850,13 @@ async function addTag() {
     btn.disabled = true;
     try {
         const resp = await fetch(`/admin/kbs/${_metaKbId}/documents/${encodeURIComponent(_metaDocId)}/metadata`);
-        const data = await resp.json();
-        const current = data.tags || [];
+        let current = [];
+        try {
+            const data = await resp.json();
+            current = Array.isArray(data.tags) ? data.tags : [];
+        } catch {
+            // GET 解析失败，当作空列表处理
+        }
         if (current.includes(tag)) {
             errSpan.textContent = '标签已存在';
             return;
@@ -862,10 +867,17 @@ async function addTag() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(updated)
         });
-        const result = await upd.json();
-        if (result.error) { errSpan.textContent = result.error; return; }
+        let resultTags = [];
+        try {
+            const result = await upd.json();
+            resultTags = Array.isArray(result.tags) ? result.tags : [];
+            if (result.error) { errSpan.textContent = result.error; return; }
+        } catch {
+            // PATCH 响应解析失败，取 updated 作为乐观结果
+            resultTags = updated;
+        }
         input.value = '';
-        renderTags(document.getElementById('meta-tags-display'), result.tags || []);
+        renderTags(document.getElementById('meta-tags-display'), resultTags);
     } catch(e) { errSpan.textContent = '请求失败: ' + e.message; }
     finally { btn.disabled = false; }
 }
