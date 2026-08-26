@@ -877,9 +877,9 @@ def get_model_list(model_type):
             # RAG-Server 使用固定的 embedding 模型
             models = []
             if emb_cfg.get('provider') == 'siliconflow':
-                models.append({'model_name': emb_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-m3'), 'provider': 'siliconflow'})
+                models.append({'model_name': emb_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-m3'), 'provider': 'siliconflow', 'label': 'SiliconFlow'})
             elif emb_cfg.get('provider') == 'ollama':
-                models.append({'model_name': emb_cfg.get('ollama', {}).get('model', 'bge-m3:latest'), 'provider': 'ollama'})
+                models.append({'model_name': emb_cfg.get('ollama', {}).get('model', 'bge-m3:latest'), 'provider': 'ollama', 'label': 'Ollama'})
             default_model = models[0]['model_name'] if models else None
             return jsonify({'models': models, 'default_model': default_model, 'default_rerank': None})
 
@@ -896,7 +896,7 @@ def get_model_list(model_type):
             models = []
             if rer_cfg.get('provider') == 'siliconflow':
                 model_name = rer_cfg.get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3')
-                models.append({'model_name': model_name, 'provider': 'siliconflow'})
+                models.append({'model_name': model_name, 'provider': 'siliconflow', 'label': 'SiliconFlow'})
                 logger.info(f"[Model List] rerank | added siliconflow model: {model_name}")
             default_rerank = models[0]['model_name'] if models else None
             logger.info(f"[Model List] rerank | final models={models} default_rerank={default_rerank}")
