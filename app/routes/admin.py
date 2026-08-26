@@ -16,6 +16,45 @@ def require_admin(user_id):
     return 'admin' in _gur(user_id)
 
 
+def is_role_admin(user_id):
+    """检查用户是否是某个角色的角色管理员"""
+    from app.models import get_role_admin_role_ids
+    return len(get_role_admin_role_ids(user_id)) > 0
+
+
+def require_role_admin_or_admin(user_id):
+    """允许 admin 或角色管理员"""
+    if require_admin(user_id):
+        return True
+    return is_role_admin(user_id)
+
+
+def get_managed_role_ids(user_id):
+    """获取用户作为角色管理员的角色ID列表（包含 admin 角色）"""
+    from app.models import get_role_admin_role_ids, get_db_conn
+    role_ids = get_role_admin_role_ids(user_id)
+    # 如果是 admin，也返回所有角色（admin 可管理所有 KB）
+    if require_admin(user_id):
+        with get_db_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT role_id FROM roles')
+            role_ids = [row['role_id'] for row in c.fetchall()]
+    return role_ids
+
+
+def role_admin_or_admin_required(f):
+    """Decorator to allow admin or role admin to create KBs"""
+    from functools import wraps
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('user_id'):
+            return '请先登录', 403
+        if not require_role_admin_or_admin(session['user_id']):
+            return '需要管理员或角色管理员权限', 403
+        return f(*args, **kwargs)
+    return decorated
+
+
 def admin_required(f):
     """Decorator to require admin role"""
     from functools import wraps
@@ -231,13 +270,15 @@ def reset_user_password(user_id):
 @bp.route('/admin/roles')
 @admin_required
 def roles():
-    from app.models import get_all_roles, get_all_role_kb_permissions, get_all_kbs, get_all_users
+    from app.models import get_all_roles, get_all_role_kb_permissions, get_all_kbs, get_all_users, get_users_by_role_id, get_role_by_id
     roles = get_all_roles()
     perms = get_all_role_kb_permissions()
     kbs = get_all_kbs()
     # Build user count per role_id
     users = get_all_users()
     role_user_count = {}
+    role_users = {}  # role_id -> list of user dicts
+    role_admins = {}  # role_id -> admin_user_id
     for u in users:
         roles_str = u['roles'] if 'roles' in u.keys() else None
         if roles_str:
@@ -248,7 +289,15 @@ def roles():
                     role = get_role_by_name(r)
                     if role:
                         role_user_count[role['role_id']] = role_user_count.get(role['role_id'], 0) + 1
-    return render_template('admin_roles.html', roles=roles, kbs=kbs, perms=perms, role_user_count=role_user_count)
+    # 获取每个角色的成员列表和管理员
+    for role in roles:
+        rid = role['role_id']
+        role_users[rid] = [dict(u) for u in get_users_by_role_id(rid)]
+        # role_admin_user_id
+        role_obj = dict(role) if hasattr(role, 'keys') else role
+        role_admins[rid] = role_obj.get('role_admin_user_id') if 'role_admin_user_id' in role_obj.keys() else None
+    return render_template('admin_roles.html', roles=roles, kbs=kbs, perms=perms,
+                           role_user_count=role_user_count, role_users=role_users, role_admins=role_admins)
 
 
 @bp.route('/admin/roles', methods=['POST'])
@@ -289,18 +338,69 @@ def get_role_permissions(role_id):
     return jsonify([{'kb_id': p['kb_id'], 'can_access': p['can_access'], 'can_edit': p['can_edit'], 'can_manage': p['can_manage']} for p in perms])
 
 
+@bp.route('/admin/roles/<int:role_id>/admin-user', methods=['POST'])
+@admin_required
+def set_role_admin_user(role_id):
+    """设置或取消角色的管理员用户"""
+    from app.models import get_db_conn, get_role_by_id, set_role_admin, assign_role_to_user
+    role = get_role_by_id(role_id)
+    if not role:
+        flash('角色不存在', 'error')
+        return redirect(url_for('admin.roles'))
+    admin_user_id = request.form.get('admin_user_id', type=int)
+    # admin_user_id=0 或留空表示取消
+    if admin_user_id == 0:
+        admin_user_id = None
+    set_role_admin(role_id, admin_user_id)
+    # 如果设置了角色管理员，且该用户还没有这个角色，自动 assign
+    if admin_user_id is not None:
+        from app.models import get_user_roles
+        user_roles = get_user_roles(admin_user_id)
+        role_obj = dict(role) if hasattr(role, 'keys') else role
+        role_name = role_obj['role_name']
+        if role_name not in user_roles:
+            assign_role_to_user(admin_user_id, role_id)
+            flash(f'已设置角色管理员，并将该用户加入角色', 'success')
+        else:
+            flash(f'已设置角色管理员', 'success')
+    else:
+        flash('已取消角色管理员', 'success')
+    return redirect(url_for('admin.roles'))
+
+
 # ==================== KB Management ====================
 
 @bp.route('/admin/kbs')
 def kbs():
     from app.models import get_all_kbs, get_all_roles, get_all_role_kb_permissions, get_kb_permissions_for_roles, get_user_roles, get_db_conn
     from app.config import get_embedding_config
-    # Permission check: must be admin OR have at least one KB with can_edit/can_manage
+    # Permission check: must be admin OR role admin OR have at least one KB with can_access
     user_id = session.get('user_id')
     if not user_id:
         return redirect(url_for('auth.login'))
     role_names = get_user_roles(user_id)
     is_admin = 'admin' in role_names
+
+    # 检查是否是角色管理员
+    from app.models import get_role_admin_role_ids
+    role_admin_role_ids = get_role_admin_role_ids(user_id)
+    is_role_admin_user = len(role_admin_role_ids) > 0
+
+    # 如果既不是 admin 也不是角色管理员，也没有 KB 权限，则拒绝
+    if not is_admin and not is_role_admin_user:
+        with get_db_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT role_id FROM roles WHERE role_name IN (%s)' %
+                      ','.join(['?'] * len(role_names)), role_names)
+            role_ids = [row['role_id'] for row in c.fetchall()]
+        if role_ids:
+            user_perms = get_kb_permissions_for_roles(role_ids)
+            accessible_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_access')}
+        else:
+            accessible_kb_ids = set()
+        if not accessible_kb_ids:
+            return '无权限访问', 403
+
     editable_kb_ids = set()
     accessible_kb_ids = set()
     manageable_kb_ids = set()
@@ -308,6 +408,13 @@ def kbs():
         all_kbs = get_all_kbs()
         accessible_kb_ids = {kb['kb_id'] for kb in all_kbs}
         manageable_kb_ids = {kb['kb_id'] for kb in all_kbs}
+        editable_kb_ids = {kb['kb_id'] for kb in all_kbs}
+    elif is_role_admin_user:
+        # 角色管理员：只能看到和管理自己角色下的 KB
+        user_perms = get_kb_permissions_for_roles(role_admin_role_ids)
+        editable_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_edit') or p.get('can_manage')}
+        manageable_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_manage')}
+        accessible_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_access')}
     elif role_names:
         with get_db_conn() as conn:
             c = conn.cursor()
@@ -315,20 +422,9 @@ def kbs():
                       ','.join(['?'] * len(role_names)), role_names)
             role_ids = [row['role_id'] for row in c.fetchall()]
         user_perms = get_kb_permissions_for_roles(role_ids)
-        editable_kb_ids = {
-            kb_id for kb_id, p in user_perms.items()
-            if p.get('can_edit') or p.get('can_manage')
-        }
-        manageable_kb_ids = {
-            kb_id for kb_id, p in user_perms.items()
-            if p.get('can_manage')
-        }
-        accessible_kb_ids = {
-            kb_id for kb_id, p in user_perms.items()
-            if p.get('can_access')
-        }
-        if not accessible_kb_ids:
-            return '无权限访问', 403
+        editable_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_edit') or p.get('can_manage')}
+        manageable_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_manage')}
+        accessible_kb_ids = {kb_id for kb_id, p in user_perms.items() if p.get('can_access')}
 
     kbs = get_all_kbs()
     roles = get_all_roles()
@@ -350,13 +446,14 @@ def kbs():
             kb['_embedding_model'] = local_emb_model
             kb['_reranking_model'] = None
         elif kb.get('rag_dataset_id'):
-            # RAG KB: embedding/reranking 由 RAG-Server 统一管理
             kb['_embedding_model'] = local_emb_model
             kb['_reranking_model'] = emb_cfg.get('reranker', {}).get('siliconflow', {}).get('model', 'BAAI/bge-reranker-v2-m3')
 
     return render_template('admin_kbs.html', kbs=kbs, roles=roles, perms=perms,
                             edit_kb_id=edit_kb_id,
                             is_admin=is_admin,
+                            is_role_admin=is_role_admin_user,
+                            role_admin_role_ids=role_admin_role_ids,
                             editable_kb_ids=editable_kb_ids,
                             accessible_kb_ids=accessible_kb_ids,
                             manageable_kb_ids=manageable_kb_ids,
@@ -448,25 +545,40 @@ def delete_kb(kb_id):
 
 
 @bp.route('/admin/kbs/from-template', methods=['POST'])
-@admin_required
 def create_kb_from_template_alias():
     """别名路由：前端表单提交到 /admin/kbs/from-template"""
     import logging
+    logger = logging.getLogger(__name__)
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('auth.login'))
+    if not require_role_admin_or_admin(user_id):
+        return '需要管理员或角色管理员权限', 403
+
     logger = logging.getLogger(__name__)
     kb_name = request.form.get('kb_name', '').strip()
     description = request.form.get('description', '').strip()
     template_id = request.form.get('template_id', '').strip()
     logger.warning(f"[DEBUG from-template] kb_name={kb_name!r} template_id={template_id!r}")
 
-    # 直接内联 create_kb_from_template 逻辑，不跨函数调用
     if not kb_name:
         flash('知识库名称不能为空', 'error')
         return redirect(url_for('admin.kbs'))
 
+    # 获取当前用户的角色（如果是角色管理员，用其管理的角色）
+    is_admin_user = require_admin(user_id)
+    role_ids_for_new_kb = None
+    if not is_admin_user:
+        role_ids_for_new_kb = get_managed_role_ids(user_id)
+        if not role_ids_for_new_kb:
+            flash('无法确定知识库所属角色', 'error')
+            return redirect(url_for('admin.kbs'))
+
     # 问答知识库
     if template_id == 'qa':
         from app.models import create_local_qa_kb, get_role_by_name, set_kb_role_permission
-        kb_id = create_local_qa_kb(kb_name, description)
+        role_id = role_ids_for_new_kb[0] if role_ids_for_new_kb else None
+        kb_id = create_local_qa_kb(kb_name, description, role_id=role_id)
         admin_role = get_role_by_name('admin')
         if admin_role:
             set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
@@ -492,7 +604,8 @@ def create_kb_from_template_alias():
 
     rag_dataset_id = ds_result['id']
     from app.models import create_kb, get_role_by_name, set_kb_role_permission
-    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id)
+    role_id = role_ids_for_new_kb[0] if role_ids_for_new_kb else None
+    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id, role_id=role_id)
     admin_role = get_role_by_name('admin')
     if admin_role:
         set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
@@ -501,15 +614,16 @@ def create_kb_from_template_alias():
 
 
 @bp.route('/admin/kbs/create', methods=['POST'])
-@admin_required
+@role_admin_or_admin_required
 def create_kb_from_template():
     """从模板创建知识库（RAG-Server 模式）
-    
+
     POST body:
       kb_name, description, template_id
       - template_id='qa': 本地问答知识库（不变）
       - template_id='text_plain'|'hierarchical_full'|'hierarchical_paragraph': RAG-Server 文档知识库
     """
+    user_id = session['user_id']
     kb_name = request.form.get('kb_name', '').strip()
     description = request.form.get('description', '').strip()
     template_id = request.form.get('template_id', '').strip()
@@ -518,10 +632,20 @@ def create_kb_from_template():
         flash('知识库名称不能为空', 'error')
         return redirect(url_for('admin.kbs'))
 
+    # 获取当前用户的角色（如果是角色管理员，用其管理的角色）
+    is_admin_user = require_admin(user_id)
+    role_ids_for_new_kb = None
+    if not is_admin_user:
+        role_ids_for_new_kb = get_managed_role_ids(user_id)
+        if not role_ids_for_new_kb:
+            flash('无法确定知识库所属角色', 'error')
+            return redirect(url_for('admin.kbs'))
+
     # ===== 问答知识库（本地 FAISS） =====
     if template_id == 'qa':
         from app.models import create_local_qa_kb, get_role_by_name, set_kb_role_permission
-        kb_id = create_local_qa_kb(kb_name, description)
+        role_id = role_ids_for_new_kb[0] if role_ids_for_new_kb else None
+        kb_id = create_local_qa_kb(kb_name, description, role_id=role_id)
         admin_role = get_role_by_name('admin')
         if admin_role:
             set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)
@@ -552,11 +676,11 @@ def create_kb_from_template():
     logger.info(f"[CreateKB] RAG KB created: {rag_dataset_id}")
 
     # 2. 写入本地记录
-    from app.models import create_kb
-    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id)
+    from app.models import create_kb, get_role_by_name, set_kb_role_permission
+    role_id = role_ids_for_new_kb[0] if role_ids_for_new_kb else None
+    kb_id = create_kb(kb_name, description, template_type=template_id, rag_dataset_id=rag_dataset_id, role_id=role_id)
 
-    # 3. 给 admin 加权限
-    from app.models import get_role_by_name, set_kb_role_permission
+    # 3. 给 admin 加权限（始终）
     admin_role = get_role_by_name('admin')
     if admin_role:
         set_kb_role_permission(admin_role['role_id'], kb_id, 1, 1, 1)

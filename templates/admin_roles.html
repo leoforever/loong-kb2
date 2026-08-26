@@ -10,20 +10,63 @@
         <!-- 角色列表 -->
         <div class="card">
             <h3 class="section-title">角色列表</h3>
-    <table>
-        <thead><tr><th>ID</th><th>角色名</th><th>描述</th><th>关联用户数</th><th>操作</th></tr></thead>
+    <table style="width:100%; border-collapse:collapse;">
+        <thead><tr>
+            <th style="text-align:left; padding:8px 12px;">ID</th>
+            <th style="text-align:left; padding:8px 12px;">角色名</th>
+            <th style="text-align:left; padding:8px 12px;">描述</th>
+            <th style="text-align:center; padding:8px 12px;">成员</th>
+            <th style="text-align:center; padding:8px 12px;">角色管理员</th>
+            <th style="text-align:center; padding:8px 12px;">操作</th>
+        </tr></thead>
         <tbody>
         {% for role in roles %}
-        <tr>
-            <td>{{ role.role_id }}</td>
-            <td><span class="tag">{{ role.role_name }}</span></td>
-            <td style="color:#888; font-size:14px;">{{ role.description or '-' }}</td>
-            <td>{{ role_user_count.get(role.role_id, 0) }}</td>
-            <td>
+        <tr style="border-bottom:1px solid #f0f0f0;">
+            <td style="padding:10px 12px; color:#999;">{{ role.role_id }}</td>
+            <td style="padding:10px 12px;">
+                <span class="tag">{{ role.role_name }}</span>
+            </td>
+            <td style="padding:10px 12px; color:#888; font-size:14px;">{{ role.description or '-' }}</td>
+            <td style="padding:10px 12px; text-align:center;">
+                <span id="user-count-{{ role.role_id }}">{{ role_user_count.get(role.role_id, 0) }}</span> 人
+                <button class="btn btn-outline" style="padding:2px 10px; font-size:12px; margin-left:6px;" onclick="toggleRoleUsers({{ role.role_id }})">查看</button>
+            </td>
+            <td style="padding:10px 12px; text-align:center;">
+                <form method="post" action="/admin/roles/{{ role.role_id }}/admin-user" style="display:inline-flex; gap:6px; align-items:center;">
+                    <select name="admin_user_id" id="role-admin-sel-{{ role.role_id }}" style="padding:3px 8px; border:1px solid #ddd; border-radius:4px; font-size:13px; min-width:120px;" onchange="this.form.submit()">
+                        <option value="0">-- 未设置 --</option>
+                        {% for u in role_users.get(role.role_id, []) %}
+                        <option value="{{ u.user_id }}" {% if role_admins.get(role.role_id) == u.user_id %}selected{% endif %}>{{ u.display_name or u.username }}</option>
+                        {% endfor %}
+                    </select>
+                </form>
+            </td>
+            <td style="padding:10px 12px; text-align:center;">
                 <button class="btn btn-outline" style="padding:4px 14px; font-size:13px;" onclick="editRoleKbs({{ role.role_id }}, '{{ role.role_name }}')">配置知识库 →</button>
                 {% if role.role_name not in ('admin',) %}
                 <button class="btn btn-danger" style="padding:4px 14px; font-size:13px;" onclick="deleteRole({{ role.role_id }})">删除</button>
                 {% endif %}
+            </td>
+        </tr>
+        <!-- 角色成员展开行 -->
+        <tr id="role-users-row-{{ role.role_id }}" style="display:none; background:#fafafa;">
+            <td colspan="6" style="padding:8px 12px;">
+                <div style="padding:8px 12px; background:#f5f5f5; border-radius:6px;">
+                    <div style="font-size:12px; color:#888; margin-bottom:6px;">角色成员</div>
+                    {% if role_users.get(role.role_id) %}
+                    <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        {% for u in role_users.get(role.role_id, []) %}
+                        <span style="display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:#fff; border:1px solid #ddd; border-radius:20px; font-size:13px;">
+                            {{ u.display_name or u.username }}
+                            <span style="color:#aaa; font-size:11px;">@{{ u.username }}</span>
+                            {% if role_admins.get(role.role_id) == u.user_id %}<span style="background:#1976d2; color:#fff; font-size:10px; padding:1px 5px; border-radius:10px; margin-left:2px;">管理员</span>{% endif %}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div style="color:#999; font-size:13px;">暂无成员</div>
+                    {% endif %}
+                </div>
             </td>
         </tr>
         {% endfor %}
@@ -32,7 +75,7 @@
 </div>
 
 <!-- 创建角色弹窗 -->
-<div id="createRoleModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; display:none; justify-content:center; align-items:center;">
+<div id="createRoleModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:200; justify-content:center; align-items:center;">
     <div style="background:white; border-radius:12px; padding:32px; width:440px; max-width:90%;">
         <h3 style="margin-bottom:20px; font-size:18px;">新建角色</h3>
         <form method="post" action="/admin/roles">
@@ -106,6 +149,16 @@ let currentRoleId = null;
 
 function showCreateRole() {
     document.getElementById('createRoleModal').style.display = 'flex';
+}
+
+function toggleRoleUsers(roleId) {
+    var row = document.getElementById('role-users-row-' + roleId);
+    if (!row) return;
+    if (row.style.display === 'none') {
+        row.style.display = 'table-row';
+    } else {
+        row.style.display = 'none';
+    }
 }
 
 function editRoleKbs(roleId, roleName) {

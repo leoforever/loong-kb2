@@ -48,7 +48,7 @@
                 <h1 class="page-title">知识库配置</h1>
                 <p style="color:#888; margin-top:4px; font-size:14px;">管理知识库和本地问答库</p>
             </div>
-            {% if is_admin %}
+            {% if is_admin or is_role_admin %}
             <button class="btn btn-primary" onclick="showCreateKB()">+ 添加知识库</button>
             {% endif %}
             {% if is_admin %}
@@ -167,6 +167,11 @@
         <form method="post" action="/admin/kbs/from-template" onsubmit="return validateCreateKB()">
             <div class="form-group"><label>知识库名称</label><input name="kb_name" required placeholder="如：龙芯产品手册v2.0" style="width:100%;"></div>
             <div class="form-group"><label>描述（可选）</label><input name="description" placeholder="简要描述" style="width:100%;"></div>
+            {% if is_role_admin and not is_admin %}
+            <div style="background:#e3f0ff; border:1px solid #90caf9; border-radius:6px; padding:8px 12px; font-size:13px; color:#1565c0; margin-bottom:12px;">
+                ⚠ 您是角色管理员，新建的知识库将自动归属您管理的角色。
+            </div>
+            {% endif %}
             <div class="form-group"><label>选择模板</label></div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px;">
                 <label class="tmpl-card" onclick="selectTmpl('text_plain')">

@@ -48,6 +48,12 @@ def init_db():
             )
         ''')
 
+        # Add role_admin_user_id column (角色管理员，一对一）
+        try:
+            c.execute("ALTER TABLE roles ADD COLUMN role_admin_user_id INTEGER REFERENCES users(user_id)")
+        except Exception:
+            pass  # column already exists
+
         # Users table
         c.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -281,6 +287,50 @@ def get_role_by_name(name):
         return c.fetchone()
 
 
+def get_role_by_id(role_id):
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT * FROM roles WHERE role_id = ?', (role_id,))
+        return c.fetchone()
+
+
+def set_role_admin(role_id, admin_user_id):
+    """设置角色的管理员用户"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('UPDATE roles SET role_admin_user_id = ? WHERE role_id = ?', (admin_user_id, role_id))
+
+
+def get_role_admin_user_id(role_id):
+    """获取角色的管理员用户ID"""
+    role = get_role_by_id(role_id)
+    if not role:
+        return None
+    return role['role_admin_user_id'] if 'role_admin_user_id' in role.keys() else None
+
+
+def get_users_by_role_id(role_id):
+    """获取属于指定角色的所有用户"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT u.user_id, u.username, u.display_name, u.created_at
+            FROM users u
+            JOIN user_roles ur ON u.user_id = ur.user_id
+            WHERE ur.role_id = ?
+            ORDER BY u.user_id
+        ''', (role_id,))
+        return c.fetchall()
+
+
+def get_role_admin_role_ids(user_id):
+    """获取某用户作为角色管理员的所有角色ID（返回列表）"""
+    with get_db_conn() as conn:
+        c = conn.cursor()
+        c.execute('SELECT role_id FROM roles WHERE role_admin_user_id = ?', (user_id,))
+        return [row['role_id'] for row in c.fetchall()]
+
+
 def assign_role_to_user(user_id, role_id):
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -297,15 +347,24 @@ def remove_user_role(user_id, role_id):
 # KB config operations
 # ==============================
 
-def create_kb(name, description, template_type=None, rag_dataset_id=None):
-    """创建知识库记录（RAG-Server 模式，dify_* 字段不再使用）"""
+def create_kb(name, description, template_type=None, rag_dataset_id=None, role_id=None):
+    """创建知识库记录（RAG-Server 模式，dify_* 字段不再使用）
+    role_id: 可选，指定所属角色；为 None 则不自动授权任何角色（admin 可手动授权）
+    """
     with get_db_conn() as conn:
         c = conn.cursor()
         c.execute('''
             INSERT INTO kb_configs (kb_name, description, template_type, rag_dataset_id)
             VALUES (?, ?, ?, ?)
         ''', (name, description, template_type, rag_dataset_id))
-        return c.lastrowid
+        kb_id = c.lastrowid
+        # 如果指定了 role_id，自动给该角色加管理权限
+        if role_id is not None:
+            c.execute('''
+                INSERT OR REPLACE INTO role_kb_permissions (role_id, kb_id, can_access, can_edit, can_manage)
+                VALUES (?, ?, 1, 1, 1)
+            ''', (role_id, kb_id))
+        return kb_id
 
 
 def update_kb(kb_id, name, description, template_type=None):
@@ -457,7 +516,7 @@ def delete_user_history(user_id):
 # Local QA KB operations
 # ==============================
 
-def create_local_qa_kb(name, description=None):
+def create_local_qa_kb(name, description=None, role_id=None):
     """创建本地问答知识库（不走 Dify）"""
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -465,7 +524,13 @@ def create_local_qa_kb(name, description=None):
             INSERT INTO kb_configs (kb_name, description, dify_api_url, dify_api_key, dify_dataset_id, template_type)
             VALUES (?, ?, NULL, NULL, NULL, ?)
         ''', (name, description or '', 'qa'))
-        return c.lastrowid
+        kb_id = c.lastrowid
+        if role_id is not None:
+            c.execute('''
+                INSERT OR REPLACE INTO role_kb_permissions (role_id, kb_id, can_access, can_edit, can_manage)
+                VALUES (?, ?, 1, 1, 1)
+            ''', (role_id, kb_id))
+        return kb_id
 
 
 def is_local_qa_kb(kb_id):
