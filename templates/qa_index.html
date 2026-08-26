@@ -266,13 +266,9 @@ async function sendQuery() {
                 if (!detailDiv) {
                     detailDiv = document.createElement('div');
                     detailDiv.style.cssText = 'margin-top:6px;padding:8px;background:#f5f5f5;border-radius:6px;font-size:12px;';
-                    const seenKeys = new Set();
                     chunks.forEach(function(c, i) {
                         const kb = c.kb_name || '未知知识库';
                         const doc = c.doc_name || '';
-                        const key = kb + '|' + doc;
-                        if (seenKeys.has(key)) return;
-                        seenKeys.add(key);
                         const label = doc ? `${i+1}. 【${kb}】${doc}` : `${i+1}. 【${kb}】`;
                         const p = document.createElement('p');
                         p.style.cssText = 'margin:0 0 6px 0;line-height:1.4;word-break:break-all;';

@@ -216,13 +216,13 @@ def _boost_keyword_chunks(query, chunks):
             boost_reason.append('spec_struct')
 
         # 文档 metadata 标签匹配（用户手动打的标签列表 ["T42D6A0", "AI服务器", ...]）
-        # 任意 tag 命中 query 中的名词 → +0.4
+        # 任意 tag 命中 query 中的名词 → +0.8
         chunk_meta = chunk.get('metadata', {})
         tags = chunk_meta.get('tags', []) if isinstance(chunk_meta, dict) else []
         if tags:
             meta_hits = [t for t in tags if any(noun in t for noun in query_nouns)]
             if meta_hits:
-                boost += 0.4 * len(meta_hits)
+                boost += 0.8 * len(meta_hits)
                 boost_reason.append(f'meta:{len(meta_hits)}({",".join(meta_hits)})')
 
         if boost > 0:
