@@ -110,6 +110,138 @@ def _rerank_chunks(query, chunks):
         logger.error(f"[QA] rerank exception: {e}")
         return chunks
 
+def _deduplicate_chunks(chunks, similarity_threshold=0.85):
+    """
+    跨知识库去重：删除内容高度相似的重复chunk。
+    对于内容重复度超过 threshold 的chunk，保留得分最高的，删除其余。
+    """
+    if not chunks:
+        return chunks
+    
+    import re
+    # 按得分降序排序
+    sorted_chunks = sorted(chunks, key=lambda x: x.get('score', 0), reverse=True)
+    kept = []
+    
+    def _normalize(text):
+        if not text:
+            return ""
+        text = re.sub(r'\s+', '', text)
+        text = re.sub(r'[，。！？、；：""''【】《》]', '', text)
+        return text.lower()
+    
+    def _is_similar(chunk1, chunk2, threshold=0.85):
+        t1 = _normalize(chunk1.get('content', ''))
+        t2 = _normalize(chunk2.get('content', ''))
+        if not t1 or not t2:
+            return False
+        if t1 == t2:
+            return True
+        len_ratio = min(len(t1), len(t2)) / max(len(t1), len(t2)) if max(len(t1), len(t2)) > 0 else 0
+        if len_ratio < 0.5:
+            return False
+        if t1 in t2 or t2 in t1:
+            return True
+        common_len = 0
+        for c1, c2 in zip(t1, t2):
+            if c1 == c2:
+                common_len += 1
+            else:
+                break
+        similarity = common_len / max(len(t1), len(t2))
+        return similarity >= threshold
+    
+    kept_meta = []
+    for chunk in sorted_chunks:
+        is_duplicate = False
+        for kept_content in kept_meta:
+            if _is_similar({'content': kept_content}, chunk, similarity_threshold):
+                is_duplicate = True
+                logger.info(f"[QA] Dedup | DROP kb={chunk.get('kb_name','')} score={chunk.get('score',0):.4f} content={chunk.get('content','')[:40]!r}")
+                break
+        if not is_duplicate:
+            kept.append(chunk)
+            kept_meta.append(_normalize(chunk.get('content', '')))
+    
+    if len(kept) < len(chunks):
+        logger.info(f"[QA] Dedup | removed {len(chunks) - len(kept)} duplicate chunks, {len(kept)} remain")
+    return kept
+
+def _boost_keyword_chunks(query, chunks):
+    """
+    关键词匹配增强：对包含用户查询关键信息（如具体参数值、规格等）的chunk进行加分。
+    防止结构化数据（如"参数名称=机箱尺寸 | 规格介绍=900mm*447mm*175mm"）
+    因向量相似度不高而被遗漏。
+    """
+    if not chunks or not query:
+        return chunks
+    
+    import re
+    # 从查询中提取关键信息
+    # 比如从"龙芯AI服务器的机箱尺寸"中提取"机箱尺寸"、"900mm"等
+    
+    # 提取可能的产品型号
+    model_pattern = r'T\d+[A-Z0-9]+'
+    models = re.findall(model_pattern, query)
+    
+    # 添加查询中的重要名词
+    important_nouns = ['机箱', '尺寸', '规格', '参数', '内存', '处理器', '硬盘', '电源', '重量', '高度', '宽度', '深度']
+    query_nouns = []
+    for noun in important_nouns:
+        if noun in query:
+            query_nouns.append(noun)
+    
+    if not models and not query_nouns:
+        return chunks
+    
+    logger.info(f"[QA] KeywordBoost | query='{query}' models={models} nouns={query_nouns}")
+    
+    # 对每个chunk进行检查和加分
+    boosted = []
+    for chunk in chunks:
+        chunk = dict(chunk)  # 复制，避免修改原数据
+        content = chunk.get('content', '')
+        original_score = chunk.get('score', 0)
+        
+        boost = 0.0
+        boost_reason = []
+        
+        # 检查是否包含产品型号（强boost）
+        for model in models:
+            if model in content:
+                boost += 0.8
+                boost_reason.append(f'model:{model}')
+        
+        # 检查是否同时包含多个查询名词（如"机箱"和"尺寸"）
+        noun_count = sum(1 for noun in query_nouns if noun in content)
+        if noun_count >= 2:
+            boost += 0.5 * noun_count
+            boost_reason.append(f'nouns:{noun_count}')
+        elif noun_count == 1:
+            boost += 0.15
+            boost_reason.append(f'noun:{query_nouns[0]}')
+        
+        # 如果content中有"参数名称=XXX | 规格介绍="这种结构，额外boost
+        if '参数名称=' in content and '规格介绍=' in content:
+            boost += 0.3
+            boost_reason.append('spec_struct')
+        
+        if boost > 0:
+            chunk['score'] = original_score + boost
+            chunk['_boosted'] = True
+            chunk['_boost_reason'] = ','.join(boost_reason)
+            logger.info(f"[QA] KeywordBoost | BOOST +{boost:.2f} ({boost_reason}) score {original_score:.4f}->{chunk['score']:.4f} content={content[:50]!r}")
+        
+        boosted.append(chunk)
+    
+    # 按新的分数重新排序
+    boosted.sort(key=lambda x: x.get('score', 0), reverse=True)
+    return boosted
+
+
+
+
+
 
 def get_user_accessible_kbs(user_id):
     """Return list of kb_configs that the user can access (via their roles)"""
@@ -257,7 +389,7 @@ def ask():
         if kb.get('template_type') == 'qa':
             try:
                 from app.services.local_qa import search_local_qa
-                results = search_local_qa(kb['kb_id'], query, top_k=20)
+                results = search_local_qa(kb['kb_id'], query, top_k=50)
                 for r in results:
                     all_chunks.append({
                         'content': f"问题：{r['question']}\n答案：{r['answer']}",
@@ -278,7 +410,7 @@ def ask():
             try:
                 from app.services.rag_kb_service import RAGServerKBService
                 svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb['kb_name'])
-                result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+                result = svc.retrieve(query, top_k=50, search_method='hybrid_search', reranking_enable=True)
                 if 'error' not in result:
                     for chunk in result.get('results', []):
                         chunk['kb_name'] = kb['kb_name']
@@ -305,6 +437,10 @@ def ask():
                         headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-cache'})
 
     all_chunks.sort(key=lambda x: x.get('score', 0), reverse=True)
+    # 跨知识库去重
+    all_chunks = _deduplicate_chunks(all_chunks)
+    # 关键词匹配增强
+    all_chunks = _boost_keyword_chunks(query, all_chunks)
     top_chunks = all_chunks[:8]
     logger.info(f"[QA] ask | === TOP {len(top_chunks)} CHUNKS (sorted by score before rerank) ===")
     for i, c in enumerate(top_chunks):
@@ -412,7 +548,7 @@ def ask_json():
         if kb.get('template_type') == 'qa':
             try:
                 from app.services.local_qa import search_local_qa
-                results = search_local_qa(kb['kb_id'], query, top_k=20)
+                results = search_local_qa(kb['kb_id'], query, top_k=50)
                 for r in results:
                     all_chunks.append({
                         'content': f"问题：{r['question']}\n答案：{r['answer']}",
@@ -431,7 +567,7 @@ def ask_json():
             try:
                 from app.services.rag_kb_service import RAGServerKBService
                 svc = RAGServerKBService(rag_dataset_id=kb.get('rag_dataset_id', ''), kb_name=kb.get('kb_name', ''))
-                result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+                result = svc.retrieve(query, top_k=50, search_method='hybrid_search', reranking_enable=True)
                 if 'error' not in result:
                     for chunk in result.get('results', []):
                         chunk['kb_name'] = kb['kb_name']
@@ -447,6 +583,10 @@ def ask_json():
         return jsonify({'answer': '抱歉，未在任何知识库中找到相关内容。', 'sources': []})
 
     all_chunks.sort(key=lambda x: x.get('score', 0), reverse=True)
+    # 跨知识库去重
+    all_chunks = _deduplicate_chunks(all_chunks)
+    # 关键词匹配增强
+    all_chunks = _boost_keyword_chunks(query, all_chunks)
     top_chunks = all_chunks[:8]
 
     # Rerank if configured
@@ -505,7 +645,7 @@ def chat(kb_id):
         from app.models import save_query_log
 
         svc = RAGServerKBService(rag_dataset_id=kb['rag_dataset_id'], kb_name=kb.get('kb_name', ''))
-        retrieve_result = svc.retrieve(query, top_k=20, search_method='hybrid_search', reranking_enable=True)
+        retrieve_result = svc.retrieve(query, top_k=50, search_method='hybrid_search', reranking_enable=True)
 
         if 'error' in retrieve_result:
             return jsonify({'error': retrieve_result['error']}), 500
