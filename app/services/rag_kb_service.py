@@ -308,9 +308,6 @@ class RAGServerKBService:
         try:
             if self.local_mode:
                 from app.rag_server import core as _core
-                from app.rag_server.routes import rag_bp as _bp
-                # 直接调 Blueprint 的删除逻辑（本地重建索引）
-                # rag_bp.delete_document 需要 request context，改用 core 直接处理
                 chunks = _core._load_chunks(self.rag_dataset_id)
                 remaining = [c for c in chunks if c["doc_id"] != doc_id]
                 _core._save_chunks(self.rag_dataset_id, remaining)
@@ -318,19 +315,23 @@ class RAGServerKBService:
                 if index_path.exists():
                     import faiss, numpy as np
                     if remaining:
-                        ec = _core.CFG.get("embedding", {}).get("siliconflow", {})
-                        emb = _core.SiliconFlowEmbedding(
-                            api_key=ec.get("api_key", ""),
-                            model=ec.get("model", "BAAI/bge-m3"),
-                            base_url=ec.get("base_url", "https://api.siliconflow.cn"),
-                            dim=1024,
-                        )
-                        texts = [c.get("content", "") for c in remaining]
-                        if texts:
-                            vecs = emb.embed(texts)
-                            index = faiss.IndexFlatL2(1024)
-                            index.add(np.array(vecs, dtype=np.float32))
-                            faiss.write_index(index, str(index_path))
+                        try:
+                            ec = _core.CFG.get("embedding", {}).get("siliconflow", {})
+                            emb = _core.SiliconFlowEmbedding(
+                                api_key=ec.get("api_key", ""),
+                                model=ec.get("model", "BAAI/bge-m3"),
+                                base_url=ec.get("base_url", "https://api.siliconflow.cn"),
+                                dim=1024,
+                            )
+                            texts = [c.get("content", "") for c in remaining]
+                            if texts:
+                                vecs = emb.embed(texts)
+                                index = faiss.IndexFlatL2(1024)
+                                index.add(np.array(vecs, dtype=np.float32))
+                                faiss.write_index(index, str(index_path))
+                        except Exception as emb_err:
+                            logger.warning(f"[RAG-Server] Delete doc rebuild index failed: {emb_err}, dropping stale index")
+                            index_path.unlink()
                     else:
                         index_path.unlink()
                 logger.info(f"[RAG-Server] Delete OK (local) doc_id={doc_id}")
