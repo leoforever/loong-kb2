@@ -4,7 +4,7 @@ loong-kb2 内嵌微信 Bot（per-user polling 架构）。
 架构说明：
   - WxBotManager：全局管理器（纯 asyncio），通过 gevent.spawn 启动独立 greenlet
   - UserBot：每个用户绑定有独立的 _poll_loop 协程，共用同一个 ClientSession
-  - 发消息时用该用户自己的 user_token，不再覆盖全局 token
+  - 每个用户绑定独立 user_token，不存在全局 token
 """
 
 from __future__ import annotations
@@ -593,8 +593,7 @@ class WxBotManager:
     持有共享 ClientSession，所有 UserBot polling 协程在同一个 loop 内并发运行。
     """
 
-    def __init__(self, global_token: str = ""):
-        self._global_token = global_token
+    def __init__(self):
         self._session: Optional[aiohttp.ClientSession] = None
         self._user_bots: dict[str, UserBot] = {}
         self._user_tasks: dict[str, asyncio.Task] = {}
@@ -646,7 +645,7 @@ class WxBotManager:
                 bb = dict(b)
                 openid = bb.get("wechat_openid", "")
                 user_id = bb.get("user_id")
-                user_token = bb.get("user_token") or self._global_token
+                user_token = bb.get("user_token", "")
                 is_active = bb.get("is_active")
                 logger.info(f"[WxBotManager] DB row: openid={openid[:30]} user_id={user_id} is_active={is_active} user_token={user_token[:20] if user_token else 'EMPTY'}...")
                 if not is_active:
@@ -683,15 +682,17 @@ class WxBotManager:
 
     # ── 用户绑定/解绑 ───────────────────────────────────────────────────────
 
-    def add_user(self, openid: str, user_id: int, user_token: str = ""):
+    def add_user(self, openid: str, user_id: int, user_token: str):
         """添加新用户绑定，启动其 polling 协程"""
-        token = user_token or self._global_token
-        logger.info(f"[WxBotManager] add_user: openid={openid[:30]} user_id={user_id} token={token[:20]}...")
+        if not user_token:
+            logger.warning(f"[WxBotManager] add_user: no user_token for openid={openid[:30]}, skipping")
+            return
+        logger.info(f"[WxBotManager] add_user: openid={openid[:30]} user_id={user_id} token={user_token[:20]}...")
 
         if openid in self._user_bots:
             ub = self._user_bots[openid]
             old = ub.user_token
-            ub.user_token = token
+            ub.user_token = user_token
             logger.info(f"[WxBotManager] updated token for {openid[:20]}: {old[:20]}...")
             return
 
@@ -699,7 +700,7 @@ class WxBotManager:
             logger.warning(f"[WxBotManager] session not ready, UserBot queued: {openid[:30]}")
             return
 
-        ub = UserBot(openid=openid, user_id=user_id, user_token=token, session=self._session)
+        ub = UserBot(openid=openid, user_id=user_id, user_token=user_token, session=self._session)
         self._user_bots[openid] = ub
 
         if self._loop and self._running:
@@ -720,14 +721,6 @@ class WxBotManager:
             logger.info(f"[WxBotManager] removed UserBot openid={openid[:20]}")
         else:
             logger.warning(f"[WxBotManager] remove_user: openid={openid[:20]} not found")
-
-    def get_token(self) -> str:
-        return self._global_token
-
-    def update_token(self, new_token: str):
-        old = self._global_token
-        self._global_token = new_token
-        logger.info(f"[WxBotManager] Global token updated: {old[:8]}... -> {new_token[:8]}...")
 
     def stop(self):
         self._running = False
@@ -750,18 +743,12 @@ class WxBotManager:
 # ════════════════════════════════════════════════════════════════════════════
 # 回调注册 & 单例
 # ════════════════════════════════════════════════════════════════════════════
-_on_token_expired_cb: Optional[Callable] = None
 _on_user_bound_cb: Optional[Callable] = None
 _on_user_unbound_cb: Optional[Callable] = None
 
 
-def on_token_expired(cb: Callable):
-    global _on_token_expired_cb
-    _on_token_expired_cb = cb
-
-
 def on_user_bound(cb: Callable):
-    """用户绑定回调: cb(openid, user_id)"""
+    """用户绑定回调: cb(openid, user_id, user_token)"""
     global _on_user_bound_cb
     _on_user_bound_cb = cb
 
@@ -779,12 +766,12 @@ def get_bot() -> Optional[WxBotManager]:
     return _manager
 
 
-def start_wx_bot(ilink_token: str = ""):
+def start_wx_bot():
     global _manager
     if _manager is None:
-        _manager = WxBotManager(global_token=ilink_token)
+        _manager = WxBotManager()
         _manager.start()
-        logger.info(f"[WxBot] WxBotManager started with global_token={ilink_token[:8]}...")
+        logger.info("[WxBot] WxBotManager started")
     return _manager
 
 

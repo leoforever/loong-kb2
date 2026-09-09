@@ -4,10 +4,10 @@ WeChat binding routes.
 
 每个用户独立扫码绑定自己的微信账号，一个用户可绑定多个微信。
 
-扫码流程（参考 multi_channel_ai）：
+扫码流程：
   1. GET  /api/weixin/qr          → iLink get_bot_qrcode（GET，无需 token）
   2. 前端轮询 GET /api/weixin/binding-status/{qr_id}
-  3. confirmed 时写入 wechat_bindings 表，刷新 bot token
+  3. confirmed 时写入 wechat_bindings 表（per-user user_token）
 """
 
 from flask import Blueprint, jsonify, session, render_template, request, redirect, url_for
@@ -22,16 +22,6 @@ ILINK_APP_ID = "bot"
 CHANNEL_VERSION = "2.2.0"
 BOT_TYPE = 3
 ILINK_APP_CLIENT_VERSION = str((2 << 16) | (2 << 8) | 0)
-
-
-def _get_bot_token() -> str:
-    """优先取运行时 bot 全局 token，其次从数据库读"""
-    from app.wx_bot import get_bot
-    bot = get_bot()
-    if bot:
-        return bot.get_token()
-    from app.models import get_app_config
-    return get_app_config('wx_bot_token') or ''
 
 
 # ── 页面路由 ───────────────────────────────────────────────────────────────
@@ -78,10 +68,10 @@ def _ilink_headers(token: str = "") -> dict:
     return h
 
 
-def _ilink_get_bot_qr(token: str) -> dict:
+def _ilink_get_bot_qr() -> dict:
     """
     GET /ilink/bot/get_bot_qrcode
-    参考 weixin_adapter.py: 这是 GET 接口，无需 token，返回 qrcode + qrcode_img_content
+    无需 token，返回 qrcode(qr_id) + qrcode_img_content(base64 PNG)
     """
     url = f"{ILINK_BASE_URL}/ilink/bot/get_bot_qrcode?bot_type={BOT_TYPE}"
     headers = {
@@ -133,8 +123,7 @@ def get_qr():
         return jsonify({'error': '请先登录'}), 401
 
     try:
-        token = _get_bot_token()
-        data = _ilink_get_bot_qr(token)
+        data = _ilink_get_bot_qr()
 
         qr_url = data.get("qrcode_img_content", "")
         qr_id = data.get("qrcode", "")
@@ -181,7 +170,7 @@ def binding_status(qr_id):
 
             if real_openid:
                 from app.models import upsert_wechat_binding
-                # token 存到该用户绑定记录里（per-user），不再覆盖全局 wx_bot_token
+                # token 存到该用户绑定记录里（per-user）
                 upsert_wechat_binding(session['user_id'], real_openid, user_token=token_from_qr)
                 logger.info(f"[Wechat Bind] Bound: user_id={session['user_id']} openid={real_openid[:20]} token_set=1")
 
@@ -238,28 +227,3 @@ def unbind():
                 except Exception as e:
                     logger.error(f"[Wechat Bind] _on_user_unbound_cb error: {e}")
     return jsonify({'status': 'ok'})
-
-
-@bp.route('/admin/wxbot/token', methods=['GET', 'POST'])
-def admin_wxbot_token():
-    """管理员查看/设置微信 Bot 的 iLink token"""
-    from flask import g
-    if not getattr(g, 'is_admin', False):
-        return jsonify({'error': '需要管理员权限'}), 403
-
-    if request.method == 'POST':
-        token = (request.json or {}).get('token', '').strip()
-        if not token:
-            return jsonify({'error': 'token 不能为空'}), 400
-        from app.models import set_app_config
-        set_app_config('wx_bot_token', token)
-        from app.wx_bot import get_bot
-        bot = get_bot()
-        if bot:
-            bot.update_token(token)
-        logger.info(f"[Wechat Bind] Admin updated bot token len={len(token)}")
-        return jsonify({'status': 'ok', 'token_len': len(token)})
-
-    current = _get_bot_token()
-    masked = current[:4] + '***' + current[-4:] if current else ''
-    return jsonify({'token': current, 'token_masked': masked})

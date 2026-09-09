@@ -590,7 +590,7 @@ def upsert_wechat_binding(user_id, openid, user_token=None):
     - 如果该 openid 已绑定其他用户，先解绑（原用户自动失效）
     - 如果该 openid 已绑定同一用户，更新时间戳
     - 同一用户可以绑定多个不同的 openid
-    - user_token: 该用户扫码确认时 ilink 返回的 bot_token（per-user，不覆盖全局）
+    - user_token: 该用户扫码确认时 ilink 返回的 bot_token（per-user）
     """
     with get_db_conn() as conn:
         c = conn.cursor()

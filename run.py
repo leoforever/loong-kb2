@@ -91,36 +91,24 @@ def create_app():
 
     logger.info("Loong KB 应用已启动")
 
-    # 启动内嵌微信 Bot（仅当 token 存在时）
-    from app.config import get_wx_bot_config
-    wx_cfg = get_wx_bot_config()
-    token = wx_cfg.get('ilink_token', '')
+    # 启动内嵌微信 Bot（从 DB 恢复已绑定的用户）
+    from app.wx_bot import start_wx_bot, on_user_bound, on_user_unbound
+    import app.wx_bot as _wb
 
-    # 数据库 token 优先
-    if not token:
-        from app.models import get_app_config
-        token = get_app_config('wx_bot_token') or ''
+    manager = start_wx_bot()
+    logger.info("[WxBot] WxBotManager started")
 
-    if token:
-        from app.wx_bot import start_wx_bot, on_user_bound, on_user_unbound
-        import app.wx_bot as _wb
+    def _on_bind(openid, user_id, user_token):
+        logger.info(f"[WxBot] _on_bind called: openid={openid[:30]} user_id={user_id} token={user_token[:20]}...")
+        manager.add_user(openid, user_id, user_token=user_token)
 
-        manager = start_wx_bot(token)
-        logger.info("[WxBot] WxBotManager started")
+    def _on_unbind(openid):
+        logger.info(f"[WxBot] User unbound: openid={openid[:20]}")
+        manager.remove_user(openid)
 
-        def _on_bind(openid, user_id, user_token):
-            logger.info(f"[WxBot] _on_bind called: openid={openid[:30]} user_id={user_id} token={user_token[:20]}...")
-            manager.add_user(openid, user_id, user_token=user_token)
-
-        def _on_unbind(openid):
-            logger.info(f"[WxBot] User unbound: openid={openid[:20]}")
-            manager.remove_user(openid)
-
-        on_user_bound(_on_bind)
-        on_user_unbound(_on_unbind)
-        logger.info("[WxBot] 微信 Bot 已启动")
-    else:
-        logger.info("[WxBot] ilink_token 为空，请在 管理后台 设置")
+    on_user_bound(_on_bind)
+    on_user_unbound(_on_unbind)
+    logger.info("[WxBot] 微信 Bot 已启动")
 
     return app
 
