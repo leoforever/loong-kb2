@@ -25,11 +25,11 @@ ILINK_APP_CLIENT_VERSION = str((2 << 16) | (2 << 8) | 0)
 
 
 def _get_bot_token() -> str:
-    """优先取运行时 bot token，其次从数据库读"""
+    """优先取运行时 bot 全局 token，其次从数据库读"""
     from app.wx_bot import get_bot
     bot = get_bot()
     if bot:
-        return bot._token
+        return bot.get_token()
     from app.models import get_app_config
     return get_app_config('wx_bot_token') or ''
 
@@ -181,24 +181,16 @@ def binding_status(qr_id):
 
             if real_openid:
                 from app.models import upsert_wechat_binding
-                upsert_wechat_binding(session['user_id'], real_openid)
-                logger.info(f"[Wechat Bind] Bound: user_id={session['user_id']} openid={real_openid[:20]}")
+                # token 存到该用户绑定记录里（per-user），不再覆盖全局 wx_bot_token
+                upsert_wechat_binding(session['user_id'], real_openid, user_token=token_from_qr)
+                logger.info(f"[Wechat Bind] Bound: user_id={session['user_id']} openid={real_openid[:20]} token_set=1")
 
                 from app.wx_bot import _on_user_bound_cb
                 if _on_user_bound_cb:
                     try:
-                        _on_user_bound_cb(real_openid, session['user_id'])
+                        _on_user_bound_cb(real_openid, session['user_id'], token_from_qr)
                     except Exception as e:
                         logger.error(f"[Wechat Bind] _on_user_bound_cb error: {e}")
-
-                if token_from_qr:
-                    from app.models import set_app_config
-                    set_app_config('wx_bot_token', token_from_qr)
-                    from app.wx_bot import get_bot
-                    bot = get_bot()
-                    if bot:
-                        bot.update_token(token_from_qr)
-                    logger.info(f"[Wechat Bind] Bot token updated from QR confirm")
 
                 return jsonify({'status': 'bound', 'open_id': real_openid})
             else:

@@ -105,17 +105,19 @@ def create_app():
         from app.wx_bot import start_wx_bot, on_user_bound, on_user_unbound
         import app.wx_bot as _wb
 
-        # 注册用户绑定回调：保存 openid → user_id 到内存（供 wx_bot 收消息时查）
-        def _on_bind(openid, user_id):
-            logger.info(f"[WxBot] User bound: openid={openid[:20]} -> user_id={user_id}")
+        manager = start_wx_bot(token)
+        logger.info("[WxBot] WxBotManager started")
+
+        def _on_bind(openid, user_id, user_token):
+            logger.info(f"[WxBot] _on_bind called: openid={openid[:30]} user_id={user_id} token={user_token[:20]}...")
+            manager.add_user(openid, user_id, user_token=user_token)
 
         def _on_unbind(openid):
             logger.info(f"[WxBot] User unbound: openid={openid[:20]}")
+            manager.remove_user(openid)
 
         on_user_bound(_on_bind)
         on_user_unbound(_on_unbind)
-
-        start_wx_bot(token)
         logger.info("[WxBot] 微信 Bot 已启动")
     else:
         logger.info("[WxBot] ilink_token 为空，请在 管理后台 设置")

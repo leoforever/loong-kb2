@@ -187,11 +187,18 @@ def init_db():
                 wechat_openid TEXT NOT NULL,
                 is_active INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                user_token TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
             )
         ''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_wx_bindings_openid ON wechat_bindings(wechat_openid)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_wx_bindings_userid ON wechat_bindings(user_id)')
+
+        # Migration: add user_token column if not exists
+        try:
+            c.execute("ALTER TABLE wechat_bindings ADD COLUMN user_token TEXT")
+        except Exception:
+            pass  # already exists
 
         # App config (key-value store, e.g. wx_bot token)
         c.execute('''
@@ -570,11 +577,20 @@ def get_wechat_binding_by_openid(openid):
         return c.fetchone()
 
 
-def upsert_wechat_binding(user_id, openid):
+def get_user_token_by_openid(openid) -> str:
+    """根据 openid 查找该用户对应的 iLink bot token"""
+    binding = get_wechat_binding_by_openid(openid)
+    if binding:
+        return dict(binding).get('user_token') or ''
+    return ''
+
+
+def upsert_wechat_binding(user_id, openid, user_token=None):
     """新增/更新微信绑定（一用户可多微信）：
     - 如果该 openid 已绑定其他用户，先解绑（原用户自动失效）
     - 如果该 openid 已绑定同一用户，更新时间戳
     - 同一用户可以绑定多个不同的 openid
+    - user_token: 该用户扫码确认时 ilink 返回的 bot_token（per-user，不覆盖全局）
     """
     with get_db_conn() as conn:
         c = conn.cursor()
@@ -592,16 +608,22 @@ def upsert_wechat_binding(user_id, openid):
         )
         existing = c.fetchone()
         if existing:
-            # 已存在，更新为 active
-            c.execute(
-                'UPDATE wechat_bindings SET is_active=1, created_at=CURRENT_TIMESTAMP WHERE id=?',
-                (existing['id'],)
-            )
+            # 已存在，更新为 active + token
+            if user_token:
+                c.execute(
+                    'UPDATE wechat_bindings SET is_active=1, created_at=CURRENT_TIMESTAMP, user_token=? WHERE id=?',
+                    (user_token, existing['id'])
+                )
+            else:
+                c.execute(
+                    'UPDATE wechat_bindings SET is_active=1, created_at=CURRENT_TIMESTAMP WHERE id=?',
+                    (existing['id'],)
+                )
         else:
             # 新增
             c.execute(
-                'INSERT INTO wechat_bindings (user_id, wechat_openid, is_active) VALUES (?, ?, 1)',
-                (user_id, openid)
+                'INSERT INTO wechat_bindings (user_id, wechat_openid, is_active, user_token) VALUES (?, ?, 1, ?)',
+                (user_id, openid, user_token)
             )
 
 
@@ -618,7 +640,7 @@ def get_all_wechat_bindings():
         c = conn.cursor()
         c.execute('''
             SELECT wb.id, wb.user_id, wb.wechat_openid, wb.is_active, wb.created_at,
-                   u.username
+                   wb.user_token, u.username
             FROM wechat_bindings wb
             JOIN users u ON wb.user_id = u.user_id
             ORDER BY wb.created_at DESC
@@ -645,32 +667,40 @@ def set_app_config(key, value):
 # ==============================
 
 def get_wx_bot_state() -> dict:
-    """读取WxBot持久化状态：get_updates_buf游标 + per-peer context_tokens"""
+    """读取WxBot持久化状态：
+    - sync_bufs: dict[openid, sync_buf]，每个用户的独立游标（新 key，支持多用户）
+    - context_tokens: dict[peer_id, token]，每对话的 context_token
+    """
     import json as _json
     with get_db_conn() as conn:
         c = conn.cursor()
-        c.execute('SELECT value FROM app_config WHERE key=?', ('wx_bot_sync_buf',))
+        c.execute('SELECT value FROM app_config WHERE key=?', ('wx_bot_sync_bufs',))
         row = c.fetchone()
-        sync_buf = row['value'] if row else ''
+        sync_bufs = _json.loads(row['value']) if row and row['value'] else {}
 
         c.execute('SELECT value FROM app_config WHERE key=?', ('wx_bot_context_tokens',))
         row = c.fetchone()
         context_tokens = _json.loads(row['value']) if row and row['value'] else {}
 
         return {
-            'sync_buf': sync_buf,
+            'sync_bufs': sync_bufs,
             'context_tokens': context_tokens,
         }
 
 
 def set_wx_bot_state(*, sync_buf: str = None, context_tokens: dict = None):
-    """写入WxBot持久化状态（只更新有值的字段）"""
+    """写入WxBot持久化状态（只更新有值的字段）
+
+    注意：sync_buf 已迁移到 per-user 模式，直接写 wx_bot_sync_bufs key，
+    参见 UserBot._persist_sync_buf()。
+    本函数保留用于兼容，只写 context_tokens。
+    """
     import json as _json
     with get_db_conn() as conn:
         c = conn.cursor()
         if sync_buf is not None:
-            c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)',
-                      ('wx_bot_sync_buf', sync_buf))
+            # 旧兼容路径：忽略，sync_buf 已迁移到 per-user wx_bot_sync_bufs
+            pass
         if context_tokens is not None:
             c.execute('INSERT OR REPLACE INTO app_config (key, value) VALUES (?, ?)',
                       ('wx_bot_context_tokens', _json.dumps(context_tokens, ensure_ascii=False)))
