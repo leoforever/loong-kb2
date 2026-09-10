@@ -1005,7 +1005,14 @@ def add_qa_item(kb_id):
         return jsonify({'error': '问题不能为空'}), 400
 
     from app.services.local_qa import add_local_qa_items
-    result = add_local_qa_items(kb_id, [{'question': q, 'answer': a}])
+    try:
+        result = add_local_qa_items(kb_id, [{'question': q, 'answer': a}])
+    except Exception as e:
+        import traceback
+        logger.error(f"[Admin] add_qa_item failed: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': f'添加失败: {e}'}), 500
+    if result.get('error'):
+        return jsonify({'error': result['error']}), 500
     return jsonify({'ok': True, **result})
 
 
@@ -1061,6 +1068,78 @@ def delete_qa_item(kb_id, item_id=None):
     from app.services.local_qa import delete_local_qa_item
     delete_local_qa_item(kb_id, item_id)
     return jsonify({'ok': True})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/<int:item_id>', methods=['PATCH'])
+@kb_edit_required
+def update_qa_item(kb_id, item_id):
+    """修改指定 id 的问答对（question 和/或 answer）"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    data = request.get_json() or {}
+    question = data.get('question')
+    answer = data.get('answer')
+
+    if question is None and answer is None:
+        return jsonify({'error': '至少需要提供 question 或 answer 之一'}), 400
+
+    from app.services.local_qa import update_local_qa_item
+    try:
+        found = update_local_qa_item(kb_id, item_id, question=question, answer=answer)
+    except Exception as e:
+        import traceback
+        logger.error(f"[Admin] update_qa_item failed: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': f'更新失败: {e}'}), 500
+    if not found:
+        return jsonify({'error': '未找到该问答记录'}), 404
+    return jsonify({'ok': True})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/search', methods=['GET'])
+def search_qa_items(kb_id):
+    """在问答知识库中按关键词搜索"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    keyword = (request.args.get('q') or request.args.get('keyword') or '').strip()
+    if not keyword:
+        return jsonify({'items': [], 'total': 0, 'keyword': ''})
+
+    page = max(1, request.args.get('page', 1, type=int))
+    limit = min(200, max(10, request.args.get('limit', 50, type=int)))
+    offset = (page - 1) * limit
+
+    from app.services.local_qa import search_local_qa_items
+    items, total = search_local_qa_items(kb_id, keyword, offset=offset, limit=limit)
+    return jsonify({'items': items, 'total': total, 'keyword': keyword, 'page': page, 'limit': limit})
+
+
+@bp.route('/admin/kbs/<int:kb_id>/qa/batch-delete', methods=['POST'])
+@kb_edit_required
+def batch_delete_qa_items(kb_id):
+    """批量删除指定 id 列表的问答对"""
+    from app.models import is_local_qa_kb
+    if not is_local_qa_kb(kb_id):
+        return jsonify({'error': '该知识库不是问答知识库'}), 400
+
+    data = request.get_json() or {}
+    item_ids = data.get('ids', [])
+    if not item_ids:
+        return jsonify({'error': '未提供要删除的 id 列表'}), 400
+
+    if not isinstance(item_ids, list):
+        return jsonify({'error': 'ids 必须是数组'}), 400
+
+    item_ids = [int(x) for x in item_ids if isinstance(x, (int, str)) and str(x).isdigit()]
+    if not item_ids:
+        return jsonify({'error': '无可删除的有效 id'}), 400
+
+    from app.services.local_qa import delete_local_qa_items
+    deleted = delete_local_qa_items(kb_id, item_ids)
+    return jsonify({'ok': True, 'deleted': deleted})
 
 
 @bp.route('/admin/kbs/<int:kb_id>/qa/clear', methods=['POST'])

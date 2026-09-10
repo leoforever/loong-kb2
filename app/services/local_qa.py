@@ -43,10 +43,19 @@ def _load_meta(kb_id):
 
 
 def _save_meta(kb_id, items):
-    """保存 JSON metadata"""
+    """保存 JSON metadata（embedding 转成 list 以兼容 json.dump）"""
     path = _meta_path(kb_id)
+    # 深拷贝以避免修改原始对象；embedding numpy array → list
+    import numpy as np
+    def _to_list(item):
+        result = dict(item)
+        if 'embedding' in result and isinstance(result['embedding'], np.ndarray):
+            result['embedding'] = result['embedding'].tolist()
+        elif 'embedding' in result and isinstance(result['embedding'], (list, tuple)):
+            result['embedding'] = list(result['embedding'])
+        return result
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(items, f, ensure_ascii=False)
+        json.dump([_to_list(it) for it in items], f, ensure_ascii=False)
 
 
 def _rebuild_index(kb_id, items):
@@ -58,20 +67,26 @@ def _rebuild_index(kb_id, items):
             os.remove(idx_path)
         return
 
-    # 先探测向量维度（从第一个 embedding）
-    dim = len(items[0]['embedding'])
+    # 过滤掉 embedding 为 None 的 items（通常是 ollama 服务不可用）
+    valid_items = [it for it in items if it.get('embedding') is not None]
+    if not valid_items:
+        logger.warning(f"[LocalQA] no valid embeddings for kb_id={kb_id}, skipping index rebuild")
+        return
+
+    # 先探测向量维度（从第一个有效 embedding）
+    dim = len(valid_items[0]['embedding'])
     dim_path = os.path.join(_kb_dir(kb_id), '.dim')
     with open(dim_path, 'w') as f:
         f.write(str(dim))
 
     # 构建向量矩阵
-    matrix = np.array([item['embedding'] for item in items], dtype=np.float32)
+    matrix = np.array([item['embedding'] for item in valid_items], dtype=np.float32)
     faiss.normalize_L2(matrix)
 
     index = faiss.IndexFlatIP(dim)
     index.add(matrix)
     faiss.write_index(index, _index_path(kb_id))
-    logger.info(f"[LocalQA] rebuilt index for kb_id={kb_id}, count={len(items)}, dim={dim}")
+    logger.info(f"[LocalQA] rebuilt index for kb_id={kb_id}, count={len(valid_items)}, dim={dim}")
 
 
 # ========================
@@ -167,7 +182,13 @@ def add_local_qa_items(kb_id, qa_list):
         added += 1
 
     _save_meta(kb_id, items)
-    _rebuild_index(kb_id, items)
+    try:
+        _rebuild_index(kb_id, items)
+    except Exception as e:
+        import traceback
+        logger.error(f"[LocalQA] _rebuild_index failed: {e}\n{traceback.format_exc()}")
+        return {'added': added, 'skipped': skipped, 'total': len(items),
+                'error': f'rebuild_index failed: {e}'}
     logger.info(f"[LocalQA] kb_id={kb_id} added={added} skipped={skipped} total={len(items)}")
     return {'added': added, 'skipped': skipped, 'total': len(items)}
 
@@ -185,7 +206,11 @@ def clear_local_qa(kb_id):
     """清空指定 KB 的所有问答"""
     items = _load_meta(kb_id)
     _save_meta(kb_id, [])
-    _rebuild_index(kb_id, [])
+    try:
+        _rebuild_index(kb_id, [])
+    except Exception as e:
+        import traceback
+        logger.error(f"[LocalQA] _rebuild_index failed in clear: {e}\n{traceback.format_exc()}")
     logger.info(f"[LocalQA] cleared kb_id={kb_id}, had {len(items)} items")
 
 
@@ -195,6 +220,82 @@ def list_local_qa_items(kb_id, offset=0, limit=100):
     total = len(items)
     paginated = items[offset:offset+limit]
     return [{'id': it['id'], 'question': it['question'], 'answer': it['answer']} for it in paginated], total
+
+
+def search_local_qa_items(kb_id, keyword, offset=0, limit=50):
+    """在指定 KB 中按关键词搜索问答对（匹配 question 或 answer）"""
+    items = _load_meta(kb_id)
+    kw = keyword.lower().strip()
+    if not kw:
+        return [], 0
+    matched = [
+        it for it in items
+        if kw in it['question'].lower() or kw in it['answer'].lower()
+    ]
+    total = len(matched)
+    paginated = matched[offset:offset+limit]
+    return [{'id': it['id'], 'question': it['question'], 'answer': it['answer']} for it in paginated], total
+
+
+def update_local_qa_item(kb_id, item_id, question=None, answer=None):
+    """
+    精确更新指定 id 的问答对。
+    question/answer 至少传一个，都传则都更新。
+    question 变化时自动重新计算 embedding。
+    返回 True 表示找到并更新了，False 表示未找到。
+    """
+    items = _load_meta(kb_id)
+    for it in items:
+        if it['id'] == item_id:
+            changed = False
+            if question is not None:
+                q = question.strip()
+                if q and q != it['question']:
+                    it['question'] = q
+                    try:
+                        it['embedding'] = embed_text(q)
+                    except Exception as e:
+                        logger.warning(f"[LocalQA] re-embed failed for item {item_id}: {e}")
+                    changed = True
+            if answer is not None:
+                a = answer.strip()
+                if a != it['answer']:
+                    it['answer'] = a
+                    changed = True
+            if changed:
+                _save_meta(kb_id, items)
+                try:
+                    _rebuild_index(kb_id, items)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"[LocalQA] _rebuild_index failed in update: {e}\n{traceback.format_exc()}")
+                logger.info(f"[LocalQA] updated item_id={item_id} in kb_id={kb_id}")
+            return True
+    return False
+
+
+def delete_local_qa_items(kb_id, item_ids):
+    """
+    批量删除指定 id 列表的问答对。
+    item_ids: int 或 list[int]
+    返回删除数量。
+    """
+    if isinstance(item_ids, int):
+        item_ids = [item_ids]
+    item_ids = set(item_ids)
+    items = _load_meta(kb_id)
+    original_count = len(items)
+    items = [it for it in items if it['id'] not in item_ids]
+    deleted = original_count - len(items)
+    if deleted:
+        _save_meta(kb_id, items)
+        try:
+            _rebuild_index(kb_id, items)
+        except Exception as e:
+            import traceback
+            logger.error(f"[LocalQA] _rebuild_index failed in delete: {e}\n{traceback.format_exc()}")
+        logger.info(f"[LocalQA] batch-deleted {deleted} items from kb_id={kb_id}")
+    return deleted
 
 
 def count_local_qa(kb_id):

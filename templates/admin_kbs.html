@@ -267,6 +267,14 @@
             </div>
         </div>
 
+        <!-- 搜索栏 -->
+        <div style="margin-bottom:16px; display:flex; gap:8px; align-items:center;">
+            <input id="qa-search-input" placeholder="搜索问题或答案…" style="flex:1; padding:6px 10px; border:1px solid #ccc; border-radius:6px; font-size:13px;"
+                onkeydown="if(event.key==='Enter')searchQA()">
+            <button onclick="searchQA()" style="padding:6px 14px; background:#1976d2; color:white; border:none; border-radius:6px; font-size:13px; cursor:pointer;">搜索</button>
+            <button onclick="_currentQASearch='';document.getElementById('qa-search-input').value='';_currentQAPage=1;_selectedQAItems.clear();loadQAModal();" style="padding:6px 14px; background:#f5f5f5; color:#666; border:1px solid #ddd; border-radius:6px; font-size:13px; cursor:pointer;">清除</button>
+        </div>
+
         <!-- CSV 上传 -->
         <div style="margin-bottom:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
             <div style="font-size:13px; font-weight:500; margin-bottom:8px;">批量导入 CSV</div>
@@ -292,8 +300,13 @@
         <div style="margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                 <div style="font-size:13px; font-weight:500;">问答列表 <span id="qa-items-info" style="font-weight:normal; color:#888;"></span></div>
-                <button class="btn btn-danger" style="padding:3px 10px; font-size:12px;" onclick="clearAllQA()">清空全部</button>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button id="qa-batch-del-btn" class="btn btn-danger" style="padding:3px 10px; font-size:12px;" onclick="batchDeleteQA()" disabled>批量删除</button>
+                    <button class="btn btn-danger" style="padding:3px 10px; font-size:12px;" onclick="clearAllQA()">清空全部</button>
+                </div>
             </div>
+            <!-- 编辑弹窗用的隐藏字段 -->
+            <input type="hidden" id="qa-edit-id" value="">
             <div id="qa-items-list" style="max-height:300px; overflow-y:auto; border:1px solid #e0e0e0; border-radius:8px;">
                 <div style="padding:16px; color:#999; text-align:center; font-size:13px;">加载中…</div>
             </div>
@@ -321,11 +334,17 @@
 var _currentQAPage = 1;
 var _currentQATotal = 0;
 var _currentQALimit = 50;
+var _currentQASearch = '';  // 当前搜索关键词
+var _currentQAEditId = null;  // 当前编辑项 id
+var _selectedQAItems = new Set();  // 批量选中
 
 function showQAManage(kbId, kbName) {
     _currentQAKbId = kbId;
     _currentQAPage = 1;
+    _currentQASearch = '';
+    _selectedQAItems.clear();
     document.getElementById('qa-modal-kbname').textContent = kbName;
+    document.getElementById('qa-search-input').value = '';
     document.getElementById('qaManageModal').style.display = 'flex';
     loadQAModal();
 }
@@ -333,6 +352,7 @@ function showQAManage(kbId, kbName) {
 function loadQAModal() {
     if (!_currentQAKbId) return;
     var kbId = _currentQAKbId;
+    var keyword = _currentQASearch;
     // 加载统计
     fetch('/admin/kbs/' + kbId + '/qa/count')
         .then(r => r.json())
@@ -348,8 +368,11 @@ function loadQAModal() {
         .catch(() => {
             document.getElementById('qa-stat-index').textContent = '未知';
         });
-    // 加载列表（带分页）
-    fetch('/admin/kbs/' + kbId + '/qa/items?page=' + _currentQAPage + '&limit=' + _currentQALimit)
+    // 加载列表（搜索或分页）
+    var fetchUrl = keyword
+        ? '/admin/kbs/' + kbId + '/qa/search?q=' + encodeURIComponent(keyword) + '&page=' + _currentQAPage + '&limit=' + _currentQALimit
+        : '/admin/kbs/' + kbId + '/qa/items?page=' + _currentQAPage + '&limit=' + _currentQALimit;
+    fetch(fetchUrl)
         .then(r => r.json())
         .then(d => {
             _currentQATotal = d.total || 0;
@@ -358,21 +381,50 @@ function loadQAModal() {
             var list = document.getElementById('qa-items-list');
             var info = document.getElementById('qa-items-info');
             var pg = document.getElementById('qa-pagination');
-            info.textContent = d.total !== undefined ? '(' + d.total + '条)' : '';
+            var label = keyword
+                ? '(' + d.total + '条，搜索: ' + escHtml(keyword) + ')'
+                : '(' + d.total + '条)';
+            info.textContent = d.total !== undefined ? label : '';
             if (!d.items || !d.items.length) {
-                list.innerHTML = '<div style="padding:16px; color:#999; text-align:center; font-size:13px;">暂无问答对，请上传 CSV 或手动添加</div>';
+                list.innerHTML = '<div style="padding:16px; color:#999; text-align:center; font-size:13px;">' +
+                    (keyword ? '未找到匹配的问答对' : '暂无问答对，请上传 CSV 或手动添加') + '</div>';
                 pg.innerHTML = '';
                 return;
             }
-            list.innerHTML = d.items.map(function(it) {
-                return '<div class="qa-item-row">' +
-                    '<div class="qa-item-q">'+escHtml(it.question)+'</div>' +
-                    '<div class="qa-item-a">'+escHtml(it.answer)+'</div>' +
-                    '<button class="qa-item-del" onclick="deleteQAItem('+it.id+')">删除</button>' +
-                    '</div>';
-            }).join('');
+            // 更新批量选择状态（清空不在列表中的选中项）
+            for (var rm of Array.from(_selectedQAItems)) {
+                if (!d.items.some(function(it) { return it.id === rm; })) {
+                    _selectedQAItems.delete(rm);
+                }
+            }
+            var selectedCount = _selectedQAItems.size;
+            var selAllChecked = selectedCount > 0 && selectedCount === d.items.length;
+            list.innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr style="background:#f5f5f5;">' +
+                '<th style="width:32px; padding:4px 6px; text-align:center;"><input type="checkbox" id="qa-sel-all" ' + (selAllChecked ? 'checked' : '') + ' onclick="toggleQAAll(this)"></th>' +
+                '<th style="padding:4px 6px; text-align:center; width:50px;">操作</th>' +
+                '<th style="padding:4px 6px;">问题</th>' +
+                '<th style="padding:4px 6px;">答案</th>' +
+                '</tr></thead><tbody>' +
+                d.items.map(function(it) {
+                    var checked = _selectedQAItems.has(it.id) ? 'checked' : '';
+                    return '<tr style="border-bottom:1px solid #f0f0f0;">' +
+                        '<td style="padding:4px 6px; text-align:center;"><input type="checkbox" id="qa-sel-' + it.id + '" ' + checked + ' onclick="toggleQASingle(' + it.id + ', this.checked)"></td>' +
+                        '<td style="padding:4px 6px; text-align:center; white-space:nowrap;">' +
+                            '<button class="qa-edit-btn" data-id="' + it.id + '" data-question="' + escHtml(it.question) + '" data-answer="' + escHtml(it.answer) + '" style="padding:2px 6px; font-size:11px; cursor:pointer; border:1px solid #ddd; border-radius:4px; background:white;">编辑</button>' +
+                        '</td>' +
+                        '<td style="padding:4px 6px; color:#333;">' + escHtml(it.question) + '</td>' +
+                        '<td style="padding:4px 6px; color:#666;">' + escHtml(it.answer) + '</td>' +
+                        '</tr>';
+                }).join('') +
+                '</tbody></table>';
             // 渲染分页
             renderQAPagination(d.total, d.page, d.limit);
+            // 更新批量按钮文字
+            var selBtn = document.getElementById('qa-batch-del-btn');
+            if (selBtn) {
+                selBtn.textContent = selectedCount > 0 ? '批量删除(' + selectedCount + ')' : '批量删除';
+                selBtn.disabled = selectedCount === 0;
+            }
         })
         .catch(e => {
             document.getElementById('qa-items-list').innerHTML = '<div style="padding:16px; color:#c00; text-align:center; font-size:13px;">加载失败</div>';
@@ -444,7 +496,18 @@ function addQAItem() {
         document.getElementById('qa-new-question').value = '';
         document.getElementById('qa-new-answer').value = '';
         _currentQAPage = 1;
+        // 添加后清除搜索状态，回到全量列表
+        _currentQASearch = '';
+        document.getElementById('qa-search-input').value = '';
         loadQAModal();
+    })
+    .catch(function(e) {
+        // r.json() 解析失败（通常是服务器返回了 HTML 错误页）时走到这里
+        var msg = e.message || '操作失败';
+        if (msg.includes('Unexpected token') || msg.includes('JSON')) {
+            msg = '服务器内部错误，请检查日志';
+        }
+        alert(msg);
     });
 }
 
@@ -453,6 +516,106 @@ function deleteQAItem(itemId) {
     fetch('/admin/kbs/' + _currentQAKbId + '/qa/delete/' + itemId, {method:'POST'})
         .then(r => r.json())
         .then(d => { if (!d.error) { _currentQAPage = 1; loadQAModal(); } });
+}
+function closeQAEdit() {
+    var modal = document.getElementById('qa-edit-modal');
+    if (modal) modal.style.display = 'none';
+}
+
+function submitQAEdit() {
+    var itemId = document.getElementById('qa-edit-id').value;
+    var q = document.getElementById('qa-edit-question').value.trim();
+    var a = document.getElementById('qa-edit-answer').value.trim();
+    var errEl = document.getElementById('qa-edit-err');
+    errEl.textContent = '';
+    if (!q && !a) { errEl.textContent = '问题和答案至少填写一项'; return; }
+    var body = {};
+    if (q) body.question = q;
+    if (a) body.answer = a;
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/' + itemId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+    })
+    .then(r => r.json())
+    .then(function(d) {
+        if (d.error) { errEl.textContent = d.error; return; }
+        closeQAEdit();
+        loadQAModal();
+    })
+    .catch(function(e) {
+        var msg = e.message || '操作失败';
+        if (msg.includes('Unexpected token') || msg.includes('JSON')) {
+            msg = '服务器内部错误，请检查日志';
+        }
+        errEl.textContent = msg;
+    });
+}
+
+function searchQA() {
+    var kw = (document.getElementById('qa-search-input').value || '').trim();
+    _currentQASearch = kw;
+    _currentQAPage = 1;
+    _selectedQAItems.clear();
+    loadQAModal();
+}
+
+function toggleQASingle(id, checked) {
+    if (checked) _selectedQAItems.add(id);
+    else _selectedQAItems.delete(id);
+    var selBtn = document.getElementById('qa-batch-del-btn');
+    var cnt = _selectedQAItems.size;
+    if (selBtn) {
+        selBtn.textContent = cnt > 0 ? '批量删除(' + cnt + ')' : '批量删除';
+        selBtn.disabled = cnt === 0;
+    }
+    // 更新全选checkbox
+    var listEl = document.getElementById('qa-items-list');
+    var allCheckboxes = listEl ? listEl.querySelectorAll('input[id^="qa-sel-"]') : [];
+    var visibleIds = Array.from(allCheckboxes).map(function(cb) { return parseInt(cb.id.replace('qa-sel-', '')); });
+    var allSelected = visibleIds.length > 0 && visibleIds.every(function(id) { return _selectedQAItems.has(id); });
+    var selAll = document.getElementById('qa-sel-all');
+    if (selAll) selAll.checked = allSelected;
+}
+
+function toggleQAAll(checkbox) {
+    var listEl = document.getElementById('qa-items-list');
+    if (!listEl) return;
+    var allCheckboxes = listEl.querySelectorAll('input[id^="qa-sel-"]');
+    if (checkbox.checked) {
+        allCheckboxes.forEach(function(cb) {
+            _selectedQAItems.add(parseInt(cb.id.replace('qa-sel-', '')));
+            cb.checked = true;
+        });
+    } else {
+        allCheckboxes.forEach(function(cb) {
+            _selectedQAItems.delete(parseInt(cb.id.replace('qa-sel-', '')));
+            cb.checked = false;
+        });
+    }
+    var selBtn = document.getElementById('qa-batch-del-btn');
+    var cnt = _selectedQAItems.size;
+    if (selBtn) {
+        selBtn.textContent = cnt > 0 ? '批量删除(' + cnt + ')' : '批量删除';
+        selBtn.disabled = cnt === 0;
+    }
+}
+
+function batchDeleteQA() {
+    if (_selectedQAItems.size === 0) return;
+    if (!confirm('确认删除选中的 ' + _selectedQAItems.size + ' 条问答？')) return;
+    fetch('/admin/kbs/' + _currentQAKbId + '/qa/batch-delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: Array.from(_selectedQAItems)})
+    })
+    .then(r => r.json())
+    .then(function(d) {
+        if (d.error) { alert(d.error); return; }
+        _selectedQAItems.clear();
+        _currentQAPage = 1;
+        loadQAModal();
+    });
 }
 
 function clearAllQA() {
@@ -770,6 +933,40 @@ function escHtml(s) {
     d.textContent = s;
     return d.innerHTML;
 }
+
+// 编辑按钮事件委托（动态渲染的 button 无法直接 onclick，统一用 delegation）
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.qa-edit-btn');
+    if (!btn) return;
+    var id = btn.getAttribute('data-id');
+    var q = btn.getAttribute('data-question');
+    var a = btn.getAttribute('data-answer');
+    if (!id) return;
+    // 动态创建编辑弹窗（lazy init）
+    var modal = document.getElementById('qa-edit-modal');
+    if (!modal) {
+        var div = document.createElement('div');
+        div.id = 'qa-edit-modal';
+        div.style = 'display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:300; justify-content:center; align-items:center;';
+        div.innerHTML = '<div style="background:white; border-radius:12px; padding:24px; width:560px; max-width:90%;">' +
+            '<h3 style="margin-bottom:16px; font-size:15px;">编辑问答</h3>' +
+            '<div style="margin-bottom:12px;"><label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">问题</label>' +
+            '<input id="qa-edit-question" style="width:100%; padding:6px 8px; border:1px solid #ccc; border-radius:6px; font-size:13px; box-sizing:border-box;"></div>' +
+            '<div style="margin-bottom:12px;"><label style="font-size:12px; color:#666; display:block; margin-bottom:4px;">答案</label>' +
+            '<textarea id="qa-edit-answer" rows="4" style="width:100%; padding:6px 8px; border:1px solid #ccc; border-radius:6px; font-size:13px; resize:vertical; box-sizing:border-box;"></textarea></div>' +
+            '<div id="qa-edit-err" style="color:#c00; font-size:12px; margin-bottom:8px;"></div>' +
+            '<div style="display:flex; justify-content:flex-end; gap:8px;">' +
+            '<button onclick="closeQAEdit()" class="btn btn-secondary" style="padding:6px 14px; font-size:13px;">取消</button>' +
+            '<button onclick="submitQAEdit()" class="btn btn-primary" style="padding:6px 14px; font-size:13px;">保存</button></div></div>';
+        document.body.appendChild(div);
+        modal = div;
+    }
+    document.getElementById('qa-edit-id').value = id;
+    document.getElementById('qa-edit-question').value = q;
+    document.getElementById('qa-edit-answer').value = a;
+    document.getElementById('qa-edit-err').textContent = '';
+    modal.style.display = 'flex';
+});
 
 // ── 文档标签弹窗 ────────────────────────────────────────────────────────────
 let _metaDocId = null;
