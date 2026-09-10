@@ -154,15 +154,11 @@ def add_local_qa_items(kb_id, qa_list):
             skipped += 1
             continue
         if q in existing_questions:
-            # 已存在则覆盖答案
+            # 已存在则覆盖答案，embedding 保持不变
             old_id = existing_questions[q]
             for it in items:
                 if it['id'] == old_id:
                     it['answer'] = a
-                    try:
-                        it['embedding'] = embed_text(q)
-                    except Exception as e:
-                        logger.error(f"[LocalQA] embed failed for '{q[:30]}': {e}")
                     break
             skipped += 1
             continue
@@ -170,7 +166,8 @@ def add_local_qa_items(kb_id, qa_list):
             emb = embed_text(q)
         except Exception as e:
             logger.error(f"[LocalQA] embed failed for '{q[:30]}': {e}")
-            emb = None
+            # embedding 不可用时直接拒绝，不写入
+            raise RuntimeError(f"Embedding 服务不可用，请检查 siliconflow/ollama 配置。问题：「{q[:20]}」")
         items.append({
             'id': next_id,
             'question': q,
